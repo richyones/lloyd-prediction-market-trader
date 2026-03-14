@@ -55,6 +55,7 @@ async def run_scan_cycle() -> None:
         base_url=settings.kalshi_base_url,
         api_key_id=settings.kalshi_api_key_id,
         rsa_key_path=settings.kalshi_rsa_key_path,
+        rsa_key_content=settings.kalshi_rsa_key_content,
     )
 
     try:
@@ -199,6 +200,7 @@ async def _price_check_job() -> None:
         base_url=settings.kalshi_base_url,
         api_key_id=settings.kalshi_api_key_id,
         rsa_key_path=settings.kalshi_rsa_key_path,
+        rsa_key_content=settings.kalshi_rsa_key_content,
     )
 
     try:

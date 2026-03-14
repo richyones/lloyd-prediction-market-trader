@@ -22,16 +22,31 @@ class KalshiClient:
         base_url: str = "https://demo-api.kalshi.co/trade-api/v2",
         api_key_id: str = "",
         rsa_key_path: str = "",
+        rsa_key_content: str = "",
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key_id = api_key_id
         self._rsa_key_path = rsa_key_path
+        self._rsa_key_content = rsa_key_content
         self._private_key = self._load_rsa_key()
         self._client = http_client or httpx.AsyncClient(timeout=30.0)
         self._owns_client = http_client is None
 
     def _load_rsa_key(self) -> object | None:
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        # Try inline content first (Railway/cloud deployments)
+        if self._rsa_key_content and self._api_key_id:
+            try:
+                return load_pem_private_key(
+                    self._rsa_key_content.encode(), password=None
+                )
+            except Exception as exc:
+                log.warning("kalshi_rsa_key_content_load_failed", error=str(exc))
+                return None
+
+        # Fall back to file path (local development)
         if not self._rsa_key_path or not self._api_key_id:
             return None
         key_path = Path(self._rsa_key_path)
@@ -39,8 +54,6 @@ class KalshiClient:
             log.warning("kalshi_rsa_key_not_found", path=self._rsa_key_path)
             return None
         try:
-            from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
             return load_pem_private_key(key_path.read_bytes(), password=None)
         except Exception as exc:
             log.warning("kalshi_rsa_key_load_failed", error=str(exc))

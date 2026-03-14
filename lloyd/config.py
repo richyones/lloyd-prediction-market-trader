@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Kalshi
     kalshi_api_key_id: str = ""
     kalshi_rsa_key_path: str = ""
+    kalshi_rsa_key_content: str = ""
     kalshi_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
 
     # Scanner thresholds

@@ -1,0 +1,6 @@
+# nixpacks.toml
+[phases.install]
+cmds = ["pip install uv", "uv sync"]
+
+[start]
+cmd = "uv run lloyd run"
