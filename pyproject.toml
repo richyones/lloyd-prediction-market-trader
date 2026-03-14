@@ -1,0 +1,36 @@
+[project]
+name = "lloyd"
+version = "0.2.0"
+description = "Prediction market trading bot — Stage 2: research & prediction"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx",
+    "pydantic>=2.0",
+    "pydantic-settings",
+    "structlog",
+    "rapidfuzz",
+    "apscheduler>=3.10",
+    "python-dotenv",
+    "cryptography",
+    "anthropic",
+    "openai",
+    "google-generativeai",
+    "feedparser",
+    "rich",
+]
+
+[project.scripts]
+lloyd = "lloyd.main:cli"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
