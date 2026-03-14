@@ -4,12 +4,16 @@ RUN pip install uv
 
 WORKDIR /app
 
+# Copy dependency files first for layer caching
 COPY pyproject.toml .
 COPY uv.lock* .
 
-RUN uv sync --no-dev
+# Install dependencies only — skip building the lloyd package (source not copied yet)
+RUN uv sync --no-dev --no-install-project
 
+# Now copy source and install the project
 COPY lloyd/ ./lloyd/
+RUN uv sync --no-dev
 
 EXPOSE 8080
 
