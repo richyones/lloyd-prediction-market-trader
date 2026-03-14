@@ -40,7 +40,7 @@ def _configure_logging(level: str) -> None:
             else structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
-            structlog.stdlib._NAME_TO_LEVEL.get(level, 20)
+            structlog.stdlib.NAME_TO_LEVEL.get(level, 20)
         ),
     )
 
