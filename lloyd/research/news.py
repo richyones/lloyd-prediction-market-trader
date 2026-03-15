@@ -34,16 +34,11 @@ class NewsRetriever:
 
     async def fetch(self, market: Market) -> NewsBundle:
         keywords = self._extract_keywords(market.question)
-        gdelt_articles, rss_articles = await asyncio.gather(
-            self._fetch_gdelt(" ".join(keywords)),
-            self._fetch_rss(keywords),
-            return_exceptions=True,
-        )
-        if isinstance(gdelt_articles, BaseException):
-            log.error("gdelt_unexpected_error", error=str(gdelt_articles))
-            gdelt_articles = []
+        # GDELT disabled: free tier quota exhausted on every cycle, no signal benefit
+        # Re-enable once per-market caching reduces request volume (see backlog R6)
+        gdelt_articles = []
+        rss_articles = await self._fetch_rss(keywords)
         if isinstance(rss_articles, BaseException):
-            log.error("rss_unexpected_error", error=str(rss_articles))
             rss_articles = []
 
         merged = list(gdelt_articles) + list(rss_articles)
