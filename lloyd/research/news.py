@@ -26,6 +26,8 @@ GDELT_URL = (
 
 
 class NewsRetriever:
+    _rss_sem: asyncio.Semaphore | None = None
+
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(timeout=30.0)
 
@@ -110,14 +112,17 @@ class NewsRetriever:
             return []
 
         async def _parse_one(url: str) -> list[Article]:
-            try:
-                feed = await asyncio.wait_for(
-                    asyncio.to_thread(feedparser.parse, url),
-                    timeout=5.0,
-                )
-            except (asyncio.TimeoutError, Exception) as exc:
-                log.warning("rss_parse_error", url=url, error=str(exc))
-                return []
+            if NewsRetriever._rss_sem is None:
+                NewsRetriever._rss_sem = asyncio.Semaphore(3)
+            async with NewsRetriever._rss_sem:
+                try:
+                    feed = await asyncio.wait_for(
+                        asyncio.to_thread(feedparser.parse, url),
+                        timeout=5.0,
+                    )
+                except (asyncio.TimeoutError, Exception) as exc:
+                    log.warning("rss_parse_error", url=url, error=str(exc))
+                    return []
             results: list[Article] = []
             for entry in feed.entries:
                 title = getattr(entry, "title", "") or ""
