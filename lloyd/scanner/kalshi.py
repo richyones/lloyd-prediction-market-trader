@@ -138,6 +138,15 @@ class KalshiClient:
         return markets
 
     def _parse_market(self, raw: dict) -> Market | None:
+        # Skip zero-volume markets early — they fail the volume filter anyway
+        # and account for the majority of parse_failures log noise
+        volume_str = raw.get("volume_fp", "0") or "0"
+        try:
+            if float(volume_str) == 0:
+                return None
+        except (ValueError, TypeError):
+            return None
+
         try:
             ticker = raw.get("ticker")
             title = raw.get("title") or raw.get("yes_sub_title")

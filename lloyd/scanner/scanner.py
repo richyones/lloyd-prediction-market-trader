@@ -77,11 +77,17 @@ class MarketScanner:
         return out
 
     def _filter_liquidity(self, markets: list[Market]) -> list[Market]:
-        out = [
-            m
-            for m in markets
-            if m.liquidity is None or m.liquidity > self._settings.min_liquidity
-        ]
+        out: list[Market] = []
+        for m in markets:
+            if m.liquidity is not None:
+                # Polymarket: use actual liquidity field
+                if m.liquidity > self._settings.min_liquidity:
+                    out.append(m)
+            else:
+                # Kalshi: liquidity field is deprecated (always None)
+                # Require open_interest > 500 contracts as a proxy
+                if m.open_interest is not None and m.open_interest > 500:
+                    out.append(m)
         log.info("filter_liquidity", before=len(markets), after=len(out))
         return out
 
