@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Scheduler
     scan_interval_minutes: int = 30
+    max_prediction_candidates: int = 75
 
     # Database & logging
     database_path: str = "./lloyd.db"

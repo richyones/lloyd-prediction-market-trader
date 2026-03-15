@@ -93,7 +93,13 @@ async def run_scan_cycle() -> None:
 
                 model_weights = CalibrationAnalyzer(conn, settings).get_model_weights()
                 pipeline = EnsemblePipeline(conn, settings)
-                predictions = await pipeline.run(results, model_weights=model_weights or None)
+                top_candidates = results[:settings.max_prediction_candidates]
+                log.info(
+                    "pipeline_candidates",
+                    total_scanned=len(results),
+                    feeding_to_llm=len(top_candidates),
+                )
+                predictions = await pipeline.run(top_candidates, model_weights=model_weights or None)
 
                 # --- Stage 3: risk sizing + paper execution ---
                 await _run_stage3(conn, settings, predictions, poly_client, kalshi_client)
