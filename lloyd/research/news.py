@@ -26,6 +26,8 @@ GDELT_URL = (
 
 
 class NewsRetriever:
+    _gdelt_semaphore = asyncio.Semaphore(5)
+
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(timeout=30.0)
 
@@ -59,7 +61,11 @@ class NewsRetriever:
 
     async def _fetch_gdelt(self, query: str) -> list[Article]:
         try:
-            resp = await self._client.get(GDELT_URL.format(query=query))
+            async with self._gdelt_semaphore:
+                resp = await self._client.get(GDELT_URL.format(query=query))
+            if resp.status_code == 429:
+                log.warning("gdelt_fetch_error", error="429 Too Many Requests")
+                return []
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as exc:
