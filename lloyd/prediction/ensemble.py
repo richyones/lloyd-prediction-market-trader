@@ -11,7 +11,7 @@ from lloyd.config import Settings
 from lloyd.db import get_market_id, insert_ensemble_prediction, insert_predictions
 from lloyd.prediction.llm import (
     ClaudeSonnetPredictor,
-    GeminiPredictor,
+    # GeminiPredictor,  # disabled: SDK migration pending
     GPT5Predictor,
     PredictionResult,
 )
@@ -42,7 +42,7 @@ class EnsemblePipeline:
         self._settings = settings
         self._cache = ResearchCache(conn)
         self._retriever = NewsRetriever()
-        self._gemini = GeminiPredictor()
+        # self._gemini = GeminiPredictor()  # disabled: SDK migration pending (google-generativeai → google.genai)
         self._gpt5 = GPT5Predictor()
         self._claude = ClaudeSonnetPredictor()
         self._last_run_cost: float = 0.0
@@ -116,10 +116,8 @@ class EnsemblePipeline:
     async def _run_tier1(
         self, market: Market, bundle: NewsBundle,
     ) -> list[PredictionResult | None]:
-        return list(await asyncio.gather(
-            self._gemini.predict(market, bundle),
-            self._gpt5.predict(market, bundle),
-        ))
+        # Gemini disabled pending SDK migration — running GPT-5 only for Tier 1
+        return [await self._gpt5.predict(market, bundle)]
 
     async def _run_tier2(
         self, market: Market, bundle: NewsBundle,

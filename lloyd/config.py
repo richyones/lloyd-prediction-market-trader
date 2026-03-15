@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Scheduler
     scan_interval_minutes: int = 30
+    prediction_interval_hours: int = 3
     max_prediction_candidates: int = 75
 
     # Database & logging

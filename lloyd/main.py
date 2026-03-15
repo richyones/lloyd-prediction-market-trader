@@ -14,6 +14,7 @@ from lloyd.db import (
     get_connection,
     get_market_info,
     get_open_paper_trades,
+    get_recent_scan_results,
     init_db,
     insert_market_pairs,
     insert_markets,
@@ -85,24 +86,6 @@ async def run_scan_cycle() -> None:
             insert_scan_results(conn, results)
             if pairs:
                 insert_market_pairs(conn, pairs)
-
-            # --- Stage 2: research + prediction pipeline ---
-            if results:
-                from lloyd.postmortem.calibration import CalibrationAnalyzer
-                from lloyd.prediction.ensemble import EnsemblePipeline
-
-                model_weights = CalibrationAnalyzer(conn, settings).get_model_weights()
-                pipeline = EnsemblePipeline(conn, settings)
-                top_candidates = results[:settings.max_prediction_candidates]
-                log.info(
-                    "pipeline_candidates",
-                    total_scanned=len(results),
-                    feeding_to_llm=len(top_candidates),
-                )
-                predictions = await pipeline.run(top_candidates, model_weights=model_weights or None)
-
-                # --- Stage 3: risk sizing + paper execution ---
-                await _run_stage3(conn, settings, predictions, poly_client, kalshi_client)
         finally:
             conn.close()
 
@@ -112,6 +95,49 @@ async def run_scan_cycle() -> None:
         await kalshi_client.close()
 
     log.info("scan_cycle_complete")
+
+
+async def run_prediction_cycle() -> None:
+    """Run LLM prediction + trading independently of the scan cycle."""
+    settings = get_settings()
+    log.info("prediction_cycle_start")
+
+    conn = get_connection(settings.database_path)
+    poly_client = PolymarketClient()
+    kalshi_client = KalshiClient(
+        base_url=settings.kalshi_base_url,
+        api_key_id=settings.kalshi_api_key_id,
+        rsa_key_path=settings.kalshi_rsa_key_path,
+        rsa_key_content=settings.kalshi_rsa_key_content,
+    )
+
+    try:
+        init_db(conn)
+        results = get_recent_scan_results(conn, settings.max_prediction_candidates)
+
+        if not results:
+            log.info("prediction_cycle_no_candidates")
+            return
+
+        from lloyd.postmortem.calibration import CalibrationAnalyzer
+        from lloyd.prediction.ensemble import EnsemblePipeline
+
+        model_weights = CalibrationAnalyzer(conn, settings).get_model_weights()
+        pipeline = EnsemblePipeline(conn, settings)
+        log.info(
+            "pipeline_candidates",
+            total_scanned=len(results),
+            feeding_to_llm=len(results),
+        )
+        predictions = await pipeline.run(results, model_weights=model_weights or None)
+
+        await _run_stage3(conn, settings, predictions, poly_client, kalshi_client)
+    finally:
+        await poly_client.close()
+        await kalshi_client.close()
+        conn.close()
+
+    log.info("prediction_cycle_complete")
 
 
 async def _run_stage3(
@@ -390,6 +416,11 @@ def _start_scheduler() -> None:
             minutes=settings.scan_interval_minutes,
         )
         scheduler.add_job(
+            run_prediction_cycle,
+            "interval",
+            hours=settings.prediction_interval_hours,
+        )
+        scheduler.add_job(
             _price_check_job,
             "interval",
             minutes=settings.price_check_interval_minutes,
@@ -411,11 +442,13 @@ def _start_scheduler() -> None:
         log.info(
             "scheduler_started",
             scan_interval_minutes=settings.scan_interval_minutes,
+            prediction_interval_hours=settings.prediction_interval_hours,
             price_check_interval_minutes=settings.price_check_interval_minutes,
         )
 
-        # Run one scan immediately
+        # Run one scan + prediction cycle immediately on startup
         await run_scan_cycle()
+        await run_prediction_cycle()
 
         # Keep alive until shutdown
         while not _shutdown_requested:

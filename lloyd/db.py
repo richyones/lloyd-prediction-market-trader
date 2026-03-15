@@ -387,6 +387,51 @@ def get_open_paper_trades(conn: sqlite3.Connection) -> list[Trade]:
     ]
 
 
+def get_recent_scan_results(
+    conn: sqlite3.Connection, limit: int,
+) -> list[ScanResult]:
+    """Return the most recent cycle's scan results by exploitability score."""
+    rows = conn.execute(
+        """SELECT m.platform, m.platform_id, m.question, m.category,
+                  m.current_price, m.volume, m.liquidity, m.open_interest,
+                  m.close_date, m.raw_data, m.fetched_at,
+                  sr.exploitability_score, sr.scan_timestamp, sr.passed_filter
+           FROM scan_results sr
+           JOIN markets m ON m.id = sr.market_id
+           WHERE sr.scan_timestamp = (
+               SELECT MAX(scan_timestamp) FROM scan_results
+           )
+           ORDER BY sr.exploitability_score DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+    results: list[ScanResult] = []
+    for r in rows:
+        close_date = datetime.fromisoformat(r[8]) if r[8] else None
+        raw_data = json.loads(r[9]) if r[9] else {}
+        market = Market(
+            platform=r[0],
+            platform_id=r[1],
+            question=r[2],
+            category=r[3],
+            current_price=r[4],
+            volume=r[5],
+            liquidity=r[6],
+            open_interest=r[7],
+            close_date=close_date,
+            raw_data=raw_data,
+            fetched_at=datetime.fromisoformat(r[10]),
+        )
+        results.append(ScanResult(
+            market=market,
+            exploitability_score=r[11],
+            passed_filter=bool(r[13]),
+            scan_timestamp=datetime.fromisoformat(r[12]),
+        ))
+    return results
+
+
 def flag_large_move(conn: sqlite3.Connection, trade_id: int) -> None:
     """Mark a trade as having experienced a large price move."""
     conn.execute(
