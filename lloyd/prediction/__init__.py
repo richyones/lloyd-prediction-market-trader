@@ -1,7 +1,7 @@
 from lloyd.prediction.ensemble import EnsemblePipeline, EnsemblePrediction
 from lloyd.prediction.llm import (
     ClaudeSonnetPredictor,
-    GeminiPredictor,
+    # GeminiPredictor,
     GPT5Predictor,
     PredictionResult,
     Predictor,
