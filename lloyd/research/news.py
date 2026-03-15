@@ -116,8 +116,11 @@ class NewsRetriever:
 
         async def _parse_one(url: str) -> list[Article]:
             try:
-                feed = await asyncio.to_thread(feedparser.parse, url)
-            except Exception as exc:
+                feed = await asyncio.wait_for(
+                    asyncio.to_thread(feedparser.parse, url),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, Exception) as exc:
                 log.warning("rss_parse_error", url=url, error=str(exc))
                 return []
             results: list[Article] = []
