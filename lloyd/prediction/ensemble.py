@@ -54,8 +54,9 @@ class EnsemblePipeline:
     ) -> list[EnsemblePrediction]:
         results: list[EnsemblePrediction] = []
         total_cost = 0.0
+        total = len(candidates)
 
-        for candidate in candidates:
+        for idx, candidate in enumerate(candidates, 1):
             market: Market = candidate.market
             market_id = get_market_id(self._conn, market)
             if market_id is None:
@@ -68,9 +69,25 @@ class EnsemblePipeline:
                 bundle = await self._retriever.fetch(market)
                 self._cache.set(market_id, query_hash, bundle)
 
+            log.debug(
+                "market_news_fetched",
+                market=market.question[:60],
+                articles=bundle.article_count,
+                context_quality=bundle.context_quality,
+            )
+
             tier1 = await self._run_tier1(market, bundle)
             tier2_used = False
             tier2_result: PredictionResult | None = None
+
+            tier1_probs = [round(r.probability, 3) for r in tier1 if r is not None]
+            log.debug(
+                "tier1_complete",
+                market=market.question[:60],
+                market_price=round(market.current_price, 3),
+                tier1_probs=tier1_probs,
+                escalating=self._should_escalate(tier1, market.current_price),
+            )
 
             if self._should_escalate(tier1, market.current_price):
                 tier2_result = await self._run_tier2(market, bundle)
@@ -88,6 +105,19 @@ class EnsemblePipeline:
                 market_price=market.current_price,
                 tier2_used=tier2_used,
                 model_weights=model_weights,
+            )
+
+            log.info(
+                "prediction_complete",
+                market=market.question[:60],
+                platform=market.platform,
+                signal=ep.trade_signal,
+                edge=round(ep.edge, 3),
+                final_prob=round(ep.final_probability, 3),
+                market_price=round(market.current_price, 3),
+                tier2=tier2_used,
+                cost=round(sum(p.cost_usd for p in all_preds), 5),
+                progress=f"{idx}/{total}",
             )
 
             insert_predictions(self._conn, all_preds, market_id)

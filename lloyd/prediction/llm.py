@@ -70,6 +70,15 @@ class Predictor(ABC):
             parsed = self._parse_response(raw_text)
             total_tokens = input_tokens + output_tokens
             cost = self._calculate_cost(input_tokens, output_tokens)
+            log.debug(
+                "llm_predict_success",
+                model=self._model_name(),
+                question=market.question[:60],
+                probability=parsed["probability"],
+                confidence=parsed["confidence"],
+                tokens=total_tokens,
+                cost=round(cost, 5),
+            )
             return PredictionResult(
                 model_name=self._model_name(),
                 probability=parsed["probability"],

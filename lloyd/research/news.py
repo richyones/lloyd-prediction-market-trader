@@ -154,6 +154,11 @@ class NewsRetriever:
             all_articles.extend(batch)
 
         all_articles.sort(key=lambda a: a.published_at, reverse=True)
+        log.debug(
+            "rss_fetch_complete",
+            articles_found=len(all_articles),
+            feeds_queried=len(feed_urls),
+        )
         return all_articles[:25]
 
     def _extract_keywords(self, question: str) -> list[str]:
