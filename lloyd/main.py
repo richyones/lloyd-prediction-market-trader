@@ -289,16 +289,17 @@ def _build_api_data() -> str:
         init_db(conn)
 
         row = conn.execute(
-            "SELECT * FROM portfolio ORDER BY timestamp DESC LIMIT 1"
+            "SELECT cash_balance, total_exposure, unrealized_pnl, "
+            "realized_pnl, num_open_positions "
+            "FROM portfolio ORDER BY timestamp DESC LIMIT 1"
         ).fetchone()
         portfolio = dict(row) if row else None
 
         open_trades = [
             dict(r) for r in conn.execute(
-                "SELECT t.id, t.market_id, t.ensemble_prediction_id, t.platform, "
-                "t.direction, t.quantity, t.executed_price, t.slippage, t.fee, "
-                "t.is_paper, t.status, t.large_move_flagged, t.opened_at, "
-                "t.closed_at, t.pnl, m.question, m.close_date, m.category "
+                "SELECT t.id, m.question, m.platform, t.direction, t.quantity, "
+                "t.executed_price, t.fee, t.opened_at, t.large_move_flagged, "
+                "m.close_date, m.category "
                 "FROM trades t "
                 "JOIN markets m ON m.id = t.market_id "
                 "WHERE t.status = 'open' AND t.is_paper = 1 "
@@ -308,14 +309,13 @@ def _build_api_data() -> str:
 
         recent_predictions = [
             dict(r) for r in conn.execute(
-                "SELECT ep.id, ep.market_id, ep.ensemble_probability, ep.market_price, "
-                "ep.edge, ep.final_probability, ep.trade_signal, ep.tier2_used, "
-                "ep.created_at, m.question, m.platform, "
-                "COALESCE(SUM(p.cost_usd), 0) AS total_cost "
+                "SELECT ep.trade_signal, ep.edge, ep.final_probability, "
+                "ep.market_price, ep.tier2_used, ep.created_at, "
+                "m.question, m.platform, "
+                "SUM(p.cost_usd) as total_cost "
                 "FROM ensemble_predictions ep "
                 "JOIN markets m ON m.id = ep.market_id "
                 "LEFT JOIN predictions p ON p.market_id = ep.market_id "
-                "AND p.created_at = ep.created_at "
                 "GROUP BY ep.id "
                 "ORDER BY ep.created_at DESC "
                 "LIMIT 40"
@@ -329,7 +329,7 @@ def _build_api_data() -> str:
                 "FROM trades t "
                 "JOIN markets m ON m.id = t.market_id "
                 "LEFT JOIN outcomes o ON o.market_id = t.market_id "
-                "WHERE t.status IN ('filled', 'settled') AND t.is_paper = 1 "
+                "WHERE t.status = 'filled' AND t.is_paper = 1 "
                 "ORDER BY t.closed_at DESC"
             ).fetchall()
         ]
@@ -347,7 +347,9 @@ def _build_api_data() -> str:
 
         model_scores = [
             dict(r) for r in conn.execute(
-                "SELECT * FROM model_scores ORDER BY period_end DESC"
+                "SELECT model_name, category, period_type, brier_score, "
+                "calibration_error, num_predictions, period_end "
+                "FROM model_scores ORDER BY period_end DESC"
             ).fetchall()
         ]
 
@@ -355,13 +357,13 @@ def _build_api_data() -> str:
         conn.close()
 
     payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "portfolio": portfolio,
         "open_trades": open_trades,
         "recent_predictions": recent_predictions,
-        "settled_trades": settled_trades,
         "cost_by_day": cost_by_day,
+        "settled_trades": settled_trades,
         "model_scores": model_scores,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     return json.dumps(payload)
 
@@ -378,7 +380,7 @@ def _http_response(status: str, content_type: str, body: bytes, extra_headers: s
     ).encode() + body
 
 
-async def _http_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """Minimal HTTP router for dashboard, health check, and API data."""
     try:
         raw = await reader.read(8192)
@@ -386,12 +388,6 @@ async def _http_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         parts = request_line.split()
         method = parts[0] if len(parts) >= 1 else ""
         path = parts[1] if len(parts) >= 2 else ""
-
-        if method != "GET":
-            body = b'{"error":"method not allowed"}'
-            writer.write(_http_response("405 Method Not Allowed", "application/json", body))
-            await writer.drain()
-            return
 
         if path == "/health":
             body = b'{"status":"ok"}'
@@ -402,27 +398,29 @@ async def _http_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 html = DASHBOARD_PATH.read_bytes()
                 writer.write(_http_response("200 OK", "text/html; charset=utf-8", html))
             else:
-                body = b'{"error":"dashboard.html not found"}'
-                writer.write(_http_response("404 Not Found", "application/json", body))
+                body = b'Not found'
+                writer.write(_http_response("404 Not Found", "text/plain", body))
 
         elif path == "/api/data":
             try:
                 body = _build_api_data().encode("utf-8")
                 writer.write(_http_response(
-                    "200 OK", "application/json",
-                    body, "Access-Control-Allow-Origin: *\r\n",
+                    "200 OK", "application/json", body,
+                    "Access-Control-Allow-Origin: *\r\n"
+                    "Access-Control-Allow-Methods: GET\r\n",
                 ))
             except Exception as exc:
                 log.error("api_data_error", error=str(exc))
                 body = json.dumps({"error": str(exc)}).encode("utf-8")
                 writer.write(_http_response(
-                    "500 Internal Server Error", "application/json",
-                    body, "Access-Control-Allow-Origin: *\r\n",
+                    "500 Internal Server Error", "application/json", body,
+                    "Access-Control-Allow-Origin: *\r\n"
+                    "Access-Control-Allow-Methods: GET\r\n",
                 ))
 
         else:
-            body = b'{"error":"not found"}'
-            writer.write(_http_response("404 Not Found", "application/json", body))
+            body = b'Not found'
+            writer.write(_http_response("404 Not Found", "text/plain", body))
 
         await writer.drain()
     finally:
@@ -532,7 +530,7 @@ def _start_scheduler() -> None:
         # --- Health check HTTP server ---
         try:
             health_server = await asyncio.start_server(
-                _http_handler, "0.0.0.0", settings.health_check_port,
+                _health_handler, "0.0.0.0", settings.health_check_port,
             )
             log.info("health_server_started", port=settings.health_check_port)
         except OSError as exc:

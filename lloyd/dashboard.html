@@ -657,6 +657,12 @@ tr.signal-buy-no  { background: rgba(239,68,68,0.04); }
 
   /* ── Main data fetch and render ─────────────────────── */
   function loadData() {
+    if (window.location.protocol === 'file:') {
+      showError('Open this dashboard via your Railway URL, not as a local file. Example: https://your-app.railway.app');
+      $loading.classList.add('hidden');
+      return;
+    }
+
     $loading.classList.remove('hidden');
     $dashboard.classList.add('hidden');
     hideError();
