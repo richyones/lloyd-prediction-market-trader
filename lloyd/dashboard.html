@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLOYD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d0f14;
+  --surface: #151820;
+  --border: #2a2d3a;
+  --text: #e8eaf0;
+  --muted: #6b7280;
+  --green: #22c55e;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --blue: #3b82f6;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: 'Inter', sans-serif;
+}
+
+html { font-size: 14px; }
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg);
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.04) 2px,
+    rgba(0, 0, 0, 0.04) 4px
+  );
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.hidden { display: none !important; }
+
+/* ── Header ─────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.wordmark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1.4rem;
+  letter-spacing: 0.25em;
+  color: var(--text);
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-meta .ts {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+button {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+button:hover:not(:disabled) { background: var(--border); border-color: var(--muted); }
+button:disabled { opacity: 0.35; cursor: default; }
+button.primary { border-color: var(--blue); color: var(--blue); }
+button.primary:hover:not(:disabled) { background: rgba(59,130,246,0.12); }
+
+/* ── Error banner ───────────────────────────────────── */
+#error-banner {
+  background: rgba(239,68,68,0.12);
+  border-bottom: 1px solid var(--red);
+  color: var(--red);
+  padding: 10px 24px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+/* ── Loading spinner ────────────────────────────────── */
+#loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  height: 60vh;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Dashboard layout ───────────────────────────────── */
+#dashboard {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+}
+
+/* ── Section headers ────────────────────────────────── */
+.section-header {
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* ── Cards row ──────────────────────────────────────── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 18px;
+}
+
+.card .label {
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.card .value {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.card .value.positive { color: var(--green); }
+.card .value.negative { color: var(--red); }
+.card .value.neutral  { color: var(--muted); }
+
+/* ── Panel (table wrapper) ──────────────────────────── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+
+.panel-head {
+  padding: 14px 18px 10px;
+}
+
+/* ── Tables ─────────────────────────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.data-table thead th {
+  font-family: var(--font-sans);
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(42,45,58,0.5);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover { background: rgba(255,255,255,0.015); }
+
+.data-table .num { text-align: right; }
+.data-table .question { white-space: normal; max-width: 340px; }
+
+/* ── Badges ─────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
+.badge-red   { background: rgba(239,68,68,0.15); color: var(--red); }
+.badge-amber { background: rgba(245,158,11,0.12); color: var(--amber); }
+.badge-blue  { background: rgba(59,130,246,0.12); color: var(--blue); }
+.badge-muted { background: rgba(107,114,128,0.12); color: var(--muted); }
+
+/* ── Signal row highlights ──────────────────────────── */
+tr.signal-buy-yes { background: rgba(34,197,94,0.04); }
+tr.signal-buy-no  { background: rgba(239,68,68,0.04); }
+
+/* ── Positive/negative text ─────────────────────────── */
+.pnl-pos { color: var(--green); }
+.pnl-neg { color: var(--red); }
+.pnl-zero { color: var(--muted); }
+
+/* ── Flag ───────────────────────────────────────────── */
+.flag { color: var(--amber); font-size: 0.9rem; }
+
+/* ── Cost chart ─────────────────────────────────────── */
+.cost-total {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 18px 8px;
+}
+
+.cost-chart {
+  padding: 0 18px 14px;
+  overflow-x: auto;
+}
+
+.cost-chart svg text {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* ── Empty state ────────────────────────────────────── */
+.empty-state {
+  padding: 32px 18px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-style: italic;
+}
+
+.panel-error {
+  padding: 14px 18px;
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+/* ── Responsive ─────────────────────────────────────── */
+@media (max-width: 900px) {
+  .cards { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 520px) {
+  .cards { grid-template-columns: 1fr; }
+  header { flex-direction: column; gap: 10px; }
+  .data-table { font-size: 0.72rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- Error banner (hidden by default) -->
+<div id="error-banner" class="hidden"></div>
+
+<!-- Header -->
+<header>
+  <div class="wordmark">LLOYD</div>
+  <div class="header-meta">
+    <span class="ts" id="last-updated">—</span>
+    <button id="btn-refresh" class="primary">Refresh</button>
+  </div>
+</header>
+
+<!-- Loading spinner -->
+<div id="loading">
+  <div class="spinner"></div>
+  <span>Loading dashboard data…</span>
+</div>
+
+<!-- Dashboard panels (hidden until data loads) -->
+<div id="dashboard" class="hidden">
+
+  <!-- Portfolio summary -->
+  <div class="section-header">Portfolio</div>
+  <div class="cards" id="portfolio-cards">
+    <div class="card"><div class="label">Cash Balance</div><div class="value" id="v-cash">—</div></div>
+    <div class="card"><div class="label">Total Exposure</div><div class="value" id="v-exposure">—</div></div>
+    <div class="card"><div class="label">Open Positions</div><div class="value" id="v-positions">—</div></div>
+    <div class="card"><div class="label">Realized P&amp;L</div><div class="value" id="v-pnl">—</div></div>
+  </div>
+
+  <!-- Open positions -->
+  <div class="panel">
+    <div class="panel-head"><div class="section-header">Open Positions</div></div>
+    <div id="open-positions"></div>
+  </div>
+
+  <!-- Recent prediction signals -->
+  <div class="panel">
+    <div class="panel-head"><div class="section-header">Recent Prediction Signals</div></div>
+    <div id="recent-predictions"></div>
+  </div>
+
+  <!-- Cost tracker -->
+  <div class="panel">
+    <div class="panel-head"><div class="section-header">Cost Tracker — Last 7 Days</div></div>
+    <div id="cost-tracker"></div>
+  </div>
+
+  <!-- Settled trades -->
+  <div class="panel">
+    <div class="panel-head"><div class="section-header">Settled Trades</div></div>
+    <div id="settled-trades"></div>
+  </div>
+
+  <!-- Model performance -->
+  <div class="panel">
+    <div class="panel-head"><div class="section-header">Model Performance</div></div>
+    <div id="model-performance"></div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  /* ── DOM refs ───────────────────────────────────────── */
+  var $error      = document.getElementById('error-banner');
+  var $loading    = document.getElementById('loading');
+  var $dashboard  = document.getElementById('dashboard');
+  var $btnRefresh = document.getElementById('btn-refresh');
+  var $updated    = document.getElementById('last-updated');
+
+  /* ── Formatting helpers ─────────────────────────────── */
+  function fmtCurrency(v) {
+    if (v == null) return '—';
+    return Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d)) return String(iso);
+    var mon = d.toLocaleString('en-US', { month: 'short' });
+    var day = d.getDate();
+    var hh  = String(d.getHours()).padStart(2, '0');
+    var mm  = String(d.getMinutes()).padStart(2, '0');
+    return mon + ' ' + day + ' ' + hh + ':' + mm;
+  }
+
+  function fmtShortDate(dateStr) {
+    if (!dateStr) return '—';
+    var d = new Date(dateStr + 'T00:00:00');
+    if (isNaN(d)) return String(dateStr);
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  function fmtPct(v) {
+    if (v == null) return '—';
+    return (v * 100).toFixed(1) + '%';
+  }
+
+  function fmtEdge(v) {
+    if (v == null) return '—';
+    var pp = (v * 100).toFixed(1);
+    return (v >= 0 ? '+' : '') + pp + 'pp';
+  }
+
+  function fmtCost(v) {
+    if (v == null) return '—';
+    return '$' + Number(v).toFixed(4);
+  }
+
+  function truncate(s, len) {
+    len = len || 55;
+    if (!s) return '—';
+    return s.length > len ? s.substring(0, len - 2) + '\u2026' : s;
+  }
+
+  function esc(s) {
+    if (s == null) return '';
+    var el = document.createElement('span');
+    el.textContent = String(s);
+    return el.innerHTML;
+  }
+
+  function pnlClass(v) {
+    if (v == null || v === 0) return 'pnl-zero';
+    return v > 0 ? 'pnl-pos' : 'pnl-neg';
+  }
+
+  function dirBadge(dir) {
+    if (dir === 'buy_yes') return '<span class="badge badge-green">BUY YES</span>';
+    if (dir === 'buy_no')  return '<span class="badge badge-red">BUY NO</span>';
+    return '<span class="badge badge-muted">' + esc(dir) + '</span>';
+  }
+
+  function signalBadge(sig) {
+    if (sig === 'buy_yes') return '<span class="badge badge-green">BUY YES</span>';
+    if (sig === 'buy_no')  return '<span class="badge badge-red">BUY NO</span>';
+    if (sig === 'no_trade') return '<span class="badge badge-muted">NO TRADE</span>';
+    return '<span class="badge badge-muted">' + esc(sig) + '</span>';
+  }
+
+  function platformBadge(p) {
+    return '<span class="badge badge-blue">' + esc(p) + '</span>';
+  }
+
+  /* ── Panel renderers ────────────────────────────────── */
+
+  function renderPortfolio(data) {
+    var r = data.portfolio;
+    if (!r) {
+      document.getElementById('v-cash').textContent = '—';
+      document.getElementById('v-exposure').textContent = '—';
+      document.getElementById('v-positions').textContent = '—';
+      var pEl = document.getElementById('v-pnl');
+      pEl.textContent = '—';
+      pEl.className = 'value neutral';
+      return;
+    }
+
+    document.getElementById('v-cash').textContent = fmtCurrency(r.cash_balance);
+    document.getElementById('v-exposure').textContent = fmtCurrency(r.total_exposure);
+    document.getElementById('v-positions').textContent = r.num_open_positions != null ? r.num_open_positions : '0';
+
+    var pnlEl = document.getElementById('v-pnl');
+    pnlEl.textContent = fmtCurrency(r.realized_pnl);
+    pnlEl.className = 'value';
+    if (r.realized_pnl > 0) pnlEl.classList.add('positive');
+    else if (r.realized_pnl < 0) pnlEl.classList.add('negative');
+    else pnlEl.classList.add('neutral');
+  }
+
+  function renderOpenPositions(rows) {
+    var el = document.getElementById('open-positions');
+
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty-state">No open positions</div>';
+      return;
+    }
+
+    var html = '<table class="data-table"><thead><tr>' +
+      '<th>Question</th><th>Platform</th><th>Direction</th><th class="num">Entry</th>' +
+      '<th class="num">Qty</th><th class="num">Fee</th><th>Opened</th><th>Closes</th><th></th>' +
+      '</tr></thead><tbody>';
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      html += '<tr>' +
+        '<td class="question">' + esc(truncate(r.question)) + '</td>' +
+        '<td>' + platformBadge(r.platform) + '</td>' +
+        '<td>' + dirBadge(r.direction) + '</td>' +
+        '<td class="num">' + fmtCurrency(r.executed_price) + '</td>' +
+        '<td class="num">' + (r.quantity != null ? Number(r.quantity).toFixed(2) : '—') + '</td>' +
+        '<td class="num">' + fmtCost(r.fee) + '</td>' +
+        '<td>' + fmtDate(r.opened_at) + '</td>' +
+        '<td>' + fmtDate(r.close_date) + '</td>' +
+        '<td>' + (r.large_move_flagged ? '<span class="flag">\u26A0</span>' : '') + '</td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  function renderPredictions(rows) {
+    var el = document.getElementById('recent-predictions');
+
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty-state">No prediction signals yet</div>';
+      return;
+    }
+
+    var html = '<table class="data-table"><thead><tr>' +
+      '<th>Signal</th><th>Edge</th><th class="num">Prob</th><th class="num">Market</th>' +
+      '<th>T2</th><th>Question</th><th>Platform</th>' +
+      '<th class="num">Cost</th><th>Time</th>' +
+      '</tr></thead><tbody>';
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var rowCls = '';
+      if (r.trade_signal === 'buy_yes') rowCls = ' class="signal-buy-yes"';
+      else if (r.trade_signal === 'buy_no') rowCls = ' class="signal-buy-no"';
+
+      html += '<tr' + rowCls + '>' +
+        '<td>' + signalBadge(r.trade_signal) + '</td>' +
+        '<td class="num">' + fmtEdge(r.edge) + '</td>' +
+        '<td class="num">' + fmtPct(r.final_probability) + '</td>' +
+        '<td class="num">' + fmtPct(r.market_price) + '</td>' +
+        '<td>' + (r.tier2_used ? '<span class="badge badge-amber">T2</span>' : '') + '</td>' +
+        '<td class="question">' + esc(truncate(r.question, 45)) + '</td>' +
+        '<td>' + platformBadge(r.platform) + '</td>' +
+        '<td class="num">' + fmtCost(r.total_cost) + '</td>' +
+        '<td>' + fmtDate(r.created_at) + '</td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  function renderCostTracker(rows) {
+    var wrapper = document.getElementById('cost-tracker');
+
+    if (!rows || !rows.length) {
+      wrapper.innerHTML = '<div class="empty-state">No prediction cost data in the last 7 days</div>';
+      return;
+    }
+
+    var total = 0;
+    var maxCost = 0;
+    for (var i = 0; i < rows.length; i++) {
+      total += rows[i].daily_cost || 0;
+      if ((rows[i].daily_cost || 0) > maxCost) maxCost = rows[i].daily_cost;
+    }
+
+    var barH = 26;
+    var gap = 8;
+    var rowH = barH + gap;
+    var leftM = 64;
+    var rightM = 160;
+    var svgW = 600;
+    var barMax = svgW - leftM - rightM;
+    var svgH = rows.length * rowH + 4;
+
+    var svg = '<svg viewBox="0 0 ' + svgW + ' ' + svgH +
+      '" width="100%" preserveAspectRatio="xMinYMin meet" style="display:block">';
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var y = i * rowH;
+      var bw = maxCost > 0 ? ((r.daily_cost || 0) / maxCost) * barMax : 0;
+      bw = Math.max(bw, 2);
+
+      svg += '<text x="' + (leftM - 8) + '" y="' + (y + barH / 2 + 4) +
+        '" fill="#6b7280" font-size="11" text-anchor="end">' +
+        esc(fmtShortDate(r.day)) + '</text>';
+
+      svg += '<rect x="' + leftM + '" y="' + y + '" width="' + bw +
+        '" height="' + barH + '" rx="3" fill="#3b82f6" opacity="0.7"/>';
+
+      svg += '<text x="' + (leftM + bw + 8) + '" y="' + (y + barH / 2 + 4) +
+        '" fill="#e8eaf0" font-size="11">' +
+        esc(fmtCost(r.daily_cost)) + '  (' + r.predictions + ')</text>';
+    }
+
+    svg += '</svg>';
+
+    wrapper.innerHTML =
+      '<div class="cost-total">Total: ' + esc(fmtCost(total)) + '</div>' +
+      '<div class="cost-chart">' + svg + '</div>';
+  }
+
+  function renderSettledTrades(rows) {
+    var el = document.getElementById('settled-trades');
+
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty-state">No resolved trades yet \u2014 check back after markets close.</div>';
+      return;
+    }
+
+    var html = '<table class="data-table"><thead><tr>' +
+      '<th>Question</th><th>Platform</th><th>Direction</th>' +
+      '<th class="num">Entry</th><th class="num">P&amp;L</th>' +
+      '<th>Outcome</th><th>Closed</th>' +
+      '</tr></thead><tbody>';
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var pnlStr = r.pnl != null ? fmtCurrency(r.pnl) : '—';
+      html += '<tr>' +
+        '<td class="question">' + esc(truncate(r.question)) + '</td>' +
+        '<td>' + platformBadge(r.platform) + '</td>' +
+        '<td>' + dirBadge(r.direction) + '</td>' +
+        '<td class="num">' + fmtCurrency(r.executed_price) + '</td>' +
+        '<td class="num ' + pnlClass(r.pnl) + '">' + pnlStr + '</td>' +
+        '<td>' + (r.outcome ? '<span class="badge badge-muted">' + esc(r.outcome) + '</span>' : '—') + '</td>' +
+        '<td>' + fmtDate(r.closed_at) + '</td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  function renderModelScores(rows) {
+    var el = document.getElementById('model-performance');
+
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty-state">Insufficient data \u2014 Brier scores appear after first resolved trades.</div>';
+      return;
+    }
+
+    var html = '<table class="data-table"><thead><tr>' +
+      '<th>Model</th><th>Period</th><th class="num">Brier</th>' +
+      '<th class="num">Cal. Error</th><th class="num">N</th>' +
+      '</tr></thead><tbody>';
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      html += '<tr>' +
+        '<td>' + esc(r.model_name) + '</td>' +
+        '<td><span class="badge badge-muted">' + esc(r.period_type) + '</span></td>' +
+        '<td class="num">' + (r.brier_score != null ? Number(r.brier_score).toFixed(4) : '—') + '</td>' +
+        '<td class="num">' + (r.calibration_error != null ? Number(r.calibration_error).toFixed(4) : '—') + '</td>' +
+        '<td class="num">' + (r.num_predictions != null ? r.num_predictions : '—') + '</td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  /* ── Main data fetch and render ─────────────────────── */
+  function loadData() {
+    $loading.classList.remove('hidden');
+    $dashboard.classList.add('hidden');
+    hideError();
+
+    fetch('/api/data')
+      .then(function (res) {
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        $loading.classList.add('hidden');
+        $dashboard.classList.remove('hidden');
+        $updated.textContent = fmtDate(data.generated_at);
+
+        renderPortfolio(data);
+        renderOpenPositions(data.open_trades);
+        renderPredictions(data.recent_predictions);
+        renderCostTracker(data.cost_by_day);
+        renderSettledTrades(data.settled_trades);
+        renderModelScores(data.model_scores);
+      })
+      .catch(function (err) {
+        $loading.classList.add('hidden');
+        showError('Failed to load data: ' + err.message);
+      });
+  }
+
+  /* ── Error helpers ──────────────────────────────────── */
+  function showError(msg) {
+    $error.textContent = msg;
+    $error.classList.remove('hidden');
+  }
+  function hideError() { $error.classList.add('hidden'); }
+
+  /* ── Wire up refresh button ─────────────────────────── */
+  $btnRefresh.addEventListener('click', loadData);
+
+  /* ── Initial load ───────────────────────────────────── */
+  loadData();
+
+})();
+</script>
+</body>
+</html>

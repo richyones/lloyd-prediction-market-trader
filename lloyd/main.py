@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import signal
+import sqlite3
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import structlog
 
@@ -24,6 +28,8 @@ from lloyd.scanner.kalshi import KalshiClient
 from lloyd.scanner.matcher import MarketMatcher
 from lloyd.scanner.polymarket import PolymarketClient
 from lloyd.scanner.scanner import MarketScanner
+
+DASHBOARD_PATH = Path(__file__).resolve().parent.parent / "lloyd" / "dashboard.html"
 
 log = structlog.get_logger()
 
@@ -274,18 +280,150 @@ async def _price_check_job() -> None:
         conn.close()
 
 
-async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    """Minimal HTTP handler for Railway health checks."""
+def _build_api_data() -> str:
+    """Query SQLite and return all dashboard data as a JSON string."""
+    settings = get_settings()
+    conn = get_connection(settings.database_path)
+    conn.row_factory = sqlite3.Row
     try:
-        await reader.read(4096)
-        response = (
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: 15\r\n"
-            "\r\n"
-            '{"status":"ok"}'
-        )
-        writer.write(response.encode())
+        init_db(conn)
+
+        row = conn.execute(
+            "SELECT * FROM portfolio ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        portfolio = dict(row) if row else None
+
+        open_trades = [
+            dict(r) for r in conn.execute(
+                "SELECT t.id, t.market_id, t.ensemble_prediction_id, t.platform, "
+                "t.direction, t.quantity, t.executed_price, t.slippage, t.fee, "
+                "t.is_paper, t.status, t.large_move_flagged, t.opened_at, "
+                "t.closed_at, t.pnl, m.question, m.close_date, m.category "
+                "FROM trades t "
+                "JOIN markets m ON m.id = t.market_id "
+                "WHERE t.status = 'open' AND t.is_paper = 1 "
+                "ORDER BY t.opened_at DESC"
+            ).fetchall()
+        ]
+
+        recent_predictions = [
+            dict(r) for r in conn.execute(
+                "SELECT ep.id, ep.market_id, ep.ensemble_probability, ep.market_price, "
+                "ep.edge, ep.final_probability, ep.trade_signal, ep.tier2_used, "
+                "ep.created_at, m.question, m.platform, "
+                "COALESCE(SUM(p.cost_usd), 0) AS total_cost "
+                "FROM ensemble_predictions ep "
+                "JOIN markets m ON m.id = ep.market_id "
+                "LEFT JOIN predictions p ON p.market_id = ep.market_id "
+                "AND p.created_at = ep.created_at "
+                "GROUP BY ep.id "
+                "ORDER BY ep.created_at DESC "
+                "LIMIT 40"
+            ).fetchall()
+        ]
+
+        settled_trades = [
+            dict(r) for r in conn.execute(
+                "SELECT t.direction, t.executed_price, t.pnl, t.closed_at, "
+                "m.question, m.platform, o.outcome "
+                "FROM trades t "
+                "JOIN markets m ON m.id = t.market_id "
+                "LEFT JOIN outcomes o ON o.market_id = t.market_id "
+                "WHERE t.status IN ('filled', 'settled') AND t.is_paper = 1 "
+                "ORDER BY t.closed_at DESC"
+            ).fetchall()
+        ]
+
+        cost_by_day = [
+            dict(r) for r in conn.execute(
+                "SELECT DATE(created_at) AS day, SUM(cost_usd) AS daily_cost, "
+                "COUNT(*) AS predictions "
+                "FROM predictions "
+                "WHERE created_at >= DATE('now', '-7 days') "
+                "GROUP BY DATE(created_at) "
+                "ORDER BY day DESC"
+            ).fetchall()
+        ]
+
+        model_scores = [
+            dict(r) for r in conn.execute(
+                "SELECT * FROM model_scores ORDER BY period_end DESC"
+            ).fetchall()
+        ]
+
+    finally:
+        conn.close()
+
+    payload = {
+        "portfolio": portfolio,
+        "open_trades": open_trades,
+        "recent_predictions": recent_predictions,
+        "settled_trades": settled_trades,
+        "cost_by_day": cost_by_day,
+        "model_scores": model_scores,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return json.dumps(payload)
+
+
+def _http_response(status: str, content_type: str, body: bytes, extra_headers: str = "") -> bytes:
+    """Build a minimal HTTP/1.1 response."""
+    return (
+        f"HTTP/1.1 {status}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"{extra_headers}"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode() + body
+
+
+async def _http_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Minimal HTTP router for dashboard, health check, and API data."""
+    try:
+        raw = await reader.read(8192)
+        request_line = raw.split(b"\r\n", 1)[0].decode("utf-8", errors="replace")
+        parts = request_line.split()
+        method = parts[0] if len(parts) >= 1 else ""
+        path = parts[1] if len(parts) >= 2 else ""
+
+        if method != "GET":
+            body = b'{"error":"method not allowed"}'
+            writer.write(_http_response("405 Method Not Allowed", "application/json", body))
+            await writer.drain()
+            return
+
+        if path == "/health":
+            body = b'{"status":"ok"}'
+            writer.write(_http_response("200 OK", "application/json", body))
+
+        elif path == "/":
+            if DASHBOARD_PATH.is_file():
+                html = DASHBOARD_PATH.read_bytes()
+                writer.write(_http_response("200 OK", "text/html; charset=utf-8", html))
+            else:
+                body = b'{"error":"dashboard.html not found"}'
+                writer.write(_http_response("404 Not Found", "application/json", body))
+
+        elif path == "/api/data":
+            try:
+                body = _build_api_data().encode("utf-8")
+                writer.write(_http_response(
+                    "200 OK", "application/json",
+                    body, "Access-Control-Allow-Origin: *\r\n",
+                ))
+            except Exception as exc:
+                log.error("api_data_error", error=str(exc))
+                body = json.dumps({"error": str(exc)}).encode("utf-8")
+                writer.write(_http_response(
+                    "500 Internal Server Error", "application/json",
+                    body, "Access-Control-Allow-Origin: *\r\n",
+                ))
+
+        else:
+            body = b'{"error":"not found"}'
+            writer.write(_http_response("404 Not Found", "application/json", body))
+
         await writer.drain()
     finally:
         writer.close()
@@ -394,7 +532,7 @@ def _start_scheduler() -> None:
         # --- Health check HTTP server ---
         try:
             health_server = await asyncio.start_server(
-                _health_handler, "0.0.0.0", settings.health_check_port,
+                _http_handler, "0.0.0.0", settings.health_check_port,
             )
             log.info("health_server_started", port=settings.health_check_port)
         except OSError as exc:
