@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from lloyd.common.models import Market, NewsBundle
 
-PROMPT_VERSION = "v1.0"
+PROMPT_VERSION = "v1.1"
 
 CATEGORY_GUIDANCE: dict[str, str] = {
     "weather": (
@@ -38,7 +38,7 @@ Do not hedge. Do not give ranges. Give a single probability."""
 _USER_TEMPLATE = """\
 EVENT: {market_question}
 RESOLUTION CRITERIA: {resolution_criteria}
-CURRENT MARKET PRICE: {current_price:.2f} (reflects crowd consensus — treat as a strong prior)
+CURRENT MARKET PRICE: {current_price:.2f} (reflects crowd consensus, which is informative but not always accurate)
 TIME TO RESOLUTION: {days_remaining}
 CATEGORY: {category}
 CATEGORY GUIDANCE: {category_guidance}
@@ -49,7 +49,7 @@ RECENT NEWS AND CONTEXT:
 INSTRUCTIONS:
 1. Consider evidence for and against the event resolving YES.
 2. Identify information the market may not have priced in.
-3. The current market price is a strong prior — only deviate if evidence clearly warrants it.
+3. The market price is a useful reference — crowds are often right, but systematically misprice niche, low-liquidity, and fast-moving events. Deviate when your evidence supports it.
 4. Be precise. Give a single float probability between 0.01 and 0.99.
 
 Respond in JSON only. No preamble. No explanation outside the JSON.
@@ -59,7 +59,7 @@ Respond in JSON only. No preamble. No explanation outside the JSON.
   "reasoning": "<2-3 sentences: your key factors and how they moved you from the market price>",
   "evidence_for": "<strongest evidence that the event resolves YES>",
   "evidence_against": "<strongest evidence that the event resolves NO>",
-  "market_disagree_reason": "<why you differ from market price, or 'aligned' if within 3pp>"
+  "market_disagree_reason": "<explain your estimate relative to the market price and the key reason you converged or diverged>"
 }}"""
 
 

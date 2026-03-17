@@ -115,6 +115,7 @@ class EnsemblePipeline:
                 edge=round(ep.edge, 3),
                 final_prob=round(ep.final_probability, 3),
                 market_price=round(market.current_price, 3),
+                model_prob=round(all_preds[0].probability, 3),
                 tier2=tier2_used,
                 cost=round(sum(p.cost_usd for p in all_preds), 5),
                 progress=f"{idx}/{total}",
