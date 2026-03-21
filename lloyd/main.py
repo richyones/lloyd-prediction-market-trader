@@ -66,10 +66,24 @@ async def run_scan_cycle() -> None:
     )
 
     try:
-        poly_markets, kalshi_markets = await asyncio.gather(
+        poly_result, kalshi_result = await asyncio.gather(
             poly_client.fetch_all_markets(),
             kalshi_client.fetch_all_markets(),
+            return_exceptions=True,
         )
+
+        if isinstance(poly_result, BaseException):
+            raise poly_result
+        poly_markets = poly_result
+
+        if isinstance(kalshi_result, BaseException):
+            log.warning(
+                "kalshi_fetch_failed",
+                error=str(kalshi_result),
+            )
+            kalshi_markets = []
+        else:
+            kalshi_markets = kalshi_result
 
         all_markets = poly_markets + kalshi_markets
         log.info(
