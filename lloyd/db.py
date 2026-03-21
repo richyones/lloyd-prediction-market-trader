@@ -5,7 +5,12 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import structlog
+from pydantic import ValidationError
+
 from lloyd.common.models import Market, MarketPair, ScanResult
+
+log = structlog.get_logger()
 
 
 @dataclass
@@ -188,6 +193,76 @@ def insert_markets(conn: sqlite3.Connection, markets: list[Market]) -> None:
         ],
     )
     conn.commit()
+
+
+def get_latest_markets(conn: sqlite3.Connection) -> list[Market]:
+    """Latest snapshot per (platform, platform_id) from ``markets`` for matcher input."""
+    rows = conn.execute(
+        """
+        SELECT platform, platform_id, question, category, current_price,
+               volume, liquidity, open_interest, close_date, raw_data, fetched_at
+        FROM markets
+        WHERE fetched_at = (
+            SELECT MAX(m2.fetched_at)
+            FROM markets m2
+            WHERE m2.platform = markets.platform
+              AND m2.platform_id = markets.platform_id
+        )
+        """
+    ).fetchall()
+
+    out: list[Market] = []
+    for row in rows:
+        (
+            platform,
+            platform_id,
+            question,
+            category,
+            current_price,
+            volume,
+            liquidity,
+            open_interest,
+            close_date_raw,
+            _raw_data_col,
+            fetched_at_raw,
+        ) = row
+        close_date: datetime | None = None
+        if close_date_raw is not None:
+            close_date = datetime.fromisoformat(close_date_raw)
+        try:
+            fetched_at = datetime.fromisoformat(fetched_at_raw)
+        except (TypeError, ValueError):
+            log.debug(
+                "get_latest_markets_skip_row",
+                platform=platform,
+                platform_id=platform_id,
+                error="invalid_fetched_at",
+            )
+            continue
+        try:
+            out.append(
+                Market(
+                    platform=platform,
+                    platform_id=platform_id,
+                    question=question,
+                    category=category,
+                    current_price=current_price,
+                    volume=volume,
+                    liquidity=liquidity,
+                    open_interest=open_interest,
+                    close_date=close_date,
+                    raw_data={},
+                    fetched_at=fetched_at,
+                )
+            )
+        except ValidationError as exc:
+            log.debug(
+                "get_latest_markets_skip_row",
+                platform=platform,
+                platform_id=platform_id,
+                error=str(exc),
+            )
+    return out
 
 
 def _resolve_market_id(

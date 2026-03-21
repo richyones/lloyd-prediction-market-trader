@@ -11,11 +11,12 @@ from pathlib import Path
 
 import structlog
 
-from lloyd.common.models import MarketPair, ScanResult
+from lloyd.common.models import ScanResult
 from lloyd.config import get_settings
 from lloyd.db import (
     flag_large_move,
     get_connection,
+    get_latest_markets,
     get_market_info,
     get_open_paper_trades,
     get_recent_scan_results,
@@ -96,20 +97,15 @@ async def run_scan_cycle() -> None:
         scanner = MarketScanner(settings)
         results = scanner.scan(all_markets)
 
-        matcher = MarketMatcher()
-        pairs = matcher.match(poly_markets, kalshi_markets)
-
         conn = get_connection(settings.database_path)
         try:
             init_db(conn)
             insert_markets(conn, [r.market for r in results])
             insert_scan_results(conn, results)
-            if pairs:
-                insert_market_pairs(conn, pairs)
         finally:
             conn.close()
 
-        print_summary(results, pairs)
+        print_summary(results)
     finally:
         await poly_client.close()
         await kalshi_client.close()
@@ -442,7 +438,7 @@ async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWr
         await writer.wait_closed()
 
 
-def print_summary(results: list[ScanResult], pairs: list[MarketPair]) -> None:
+def print_summary(results: list[ScanResult]) -> None:
     top = results[:20]
     if not top:
         print("\nNo markets passed filters.\n")
@@ -460,16 +456,6 @@ def print_summary(results: list[ScanResult], pairs: list[MarketPair]) -> None:
             f"{r.exploitability_score:>5.2f}"
         )
     print()
-
-    if pairs:
-        print(f"Cross-platform matches: {len(pairs)}")
-        for p in pairs[:10]:
-            print(
-                f"  [{p.similarity_score:.0f}%] Δ{p.price_divergence:.2f}  "
-                f"PM: {p.polymarket_market.question[:40]}  ←→  "
-                f"KA: {p.kalshi_market.question[:40]}"
-            )
-        print()
 
 
 def cli() -> None:
@@ -489,6 +475,47 @@ def cli() -> None:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+async def _matcher_job() -> None:
+    settings = get_settings()
+    conn = get_connection(settings.database_path)
+    try:
+        init_db(conn)
+        markets = get_latest_markets(conn)
+        poly_markets = [m for m in markets if m.platform == "polymarket"]
+        kalshi_markets = [m for m in markets if m.platform == "kalshi"]
+
+        if not poly_markets and not kalshi_markets:
+            log.info(
+                "matcher_job_skipped",
+                reason="no_polymarket_markets_and_no_kalshi_markets",
+            )
+            return
+        if not poly_markets:
+            log.info("matcher_job_skipped", reason="no_polymarket_markets")
+            return
+        if not kalshi_markets:
+            log.info("matcher_job_skipped", reason="no_kalshi_markets")
+            return
+
+        matcher = MarketMatcher()
+        loop = asyncio.get_running_loop()
+        pairs = await loop.run_in_executor(
+            None, lambda: matcher.match(poly_markets, kalshi_markets)
+        )
+        if pairs:
+            insert_market_pairs(conn, pairs)
+        log.info(
+            "matcher_job_complete",
+            pairs_found=len(pairs),
+            poly_markets_count=len(poly_markets),
+            kalshi_markets_count=len(kalshi_markets),
+        )
+    except Exception as exc:
+        log.error("matcher_job_failed", error=str(exc))
+    finally:
+        conn.close()
 
 
 async def _resolver_job() -> None:
@@ -588,17 +615,24 @@ def _start_scheduler() -> None:
             hour=2,
             minute=0,
         )
+        scheduler.add_job(
+            _matcher_job,
+            "interval",
+            hours=settings.matcher_interval_hours,
+        )
         scheduler.start()
         log.info(
             "scheduler_started",
             scan_interval_minutes=settings.scan_interval_minutes,
             prediction_interval_hours=settings.prediction_interval_hours,
             price_check_interval_minutes=settings.price_check_interval_minutes,
+            matcher_interval_hours=settings.matcher_interval_hours,
         )
 
         # Run one scan + prediction cycle immediately on startup
         await run_scan_cycle()
         await run_prediction_cycle()
+        asyncio.create_task(_matcher_job())
 
         # Keep alive until shutdown
         while not _shutdown_requested:
