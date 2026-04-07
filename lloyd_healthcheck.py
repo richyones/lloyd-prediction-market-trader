@@ -126,7 +126,7 @@ def check_resolver(data: dict) -> tuple[bool, str]:
         return True, "No recent prediction activity — bot may be idle, resolver check inconclusive"
 
     detail = (
-        f"⚠️ *{len(overdue)} open trade(s) past close_date by >{RESOLVER_LOOKBACK_DAYS}d* "
+        f"⚠️ *{len(overdue)} open trade(s) past close_date by >{RESOLVER_LOOKBACK_DAYS} days* "
         f"but resolver hasn't settled them:\n"
         + "\n".join(f"  • {t['platform']}: {t['question']} (closed {t['close_date']})" for t in overdue[:5])
     )
