@@ -15,6 +15,7 @@ from lloyd.config import Settings
 log = structlog.get_logger()
 
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
+CLOB_BASE_URL = "https://clob.polymarket.com"
 
 
 @dataclass
@@ -87,23 +88,55 @@ class OutcomeResolver:
                 resp = await client.get(f"{GAMMA_BASE_URL}/markets/{platform_id}")
                 resp.raise_for_status()
             except Exception as exc:
-                log.warning(
-                    "polymarket_resolution_skipped",
+                try:
+                    clob_resp = await client.get(f"{CLOB_BASE_URL}/markets/{platform_id}")
+                    clob_resp.raise_for_status()
+                except Exception:
+                    log.warning(
+                        "polymarket_resolution_skipped",
+                        market_id=market_id,
+                        platform_id=platform_id,
+                        error=str(exc),
+                    )
+                    result.errors.append(f"polymarket market {platform_id}: {exc}")
+                    continue
+
+                data = clob_resp.json()
+                if not data.get("closed"):
+                    continue
+
+                tokens = data.get("tokens") or []
+                winner_token = next(
+                    (
+                        token
+                        for token in tokens
+                        if isinstance(token, dict) and token.get("winner") is True
+                    ),
+                    None,
+                )
+                if winner_token is None:
+                    continue
+
+                outcome_str = str(winner_token.get("outcome", "")).lower()
+                if outcome_str not in ("yes", "no"):
+                    outcome_str = "void"
+
+                log.info(
+                    "polymarket_clob_resolved",
                     market_id=market_id,
                     platform_id=platform_id,
-                    error=str(exc),
+                    outcome=outcome_str,
                 )
-                result.errors.append(f"polymarket market {platform_id}: {exc}")
-                continue
-            data = resp.json()
+            else:
+                data = resp.json()
 
-            resolved = data.get("resolved")
-            if not resolved:
-                continue
+                resolved = data.get("resolved")
+                if not resolved:
+                    continue
 
-            outcome_str = data.get("outcome", "").lower()
-            if outcome_str not in ("yes", "no"):
-                outcome_str = "void"
+                outcome_str = data.get("outcome", "").lower()
+                if outcome_str not in ("yes", "no"):
+                    outcome_str = "void"
 
             new = self._record_outcome(market_id, "polymarket", outcome_str)
             if new:

@@ -234,12 +234,19 @@ class TestPolymarketResolutionFetch:
             response=httpx.Response(422),
         )
 
+        bad_clob_resp = Mock()
+        bad_clob_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Client error '404 Not Found' for url",
+            request=httpx.Request("GET", "https://clob.polymarket.com/markets/pm-422"),
+            response=httpx.Response(404),
+        )
+
         good_resp = Mock()
         good_resp.raise_for_status.return_value = None
         good_resp.json.return_value = {"resolved": True, "outcome": "YES"}
 
         client = AsyncMock()
-        client.get = AsyncMock(side_effect=[bad_resp, good_resp])
+        client.get = AsyncMock(side_effect=[bad_resp, bad_clob_resp, good_resp])
 
         await resolver._fetch_polymarket_resolutions(
             client,
@@ -257,3 +264,115 @@ class TestPolymarketResolutionFetch:
         ).fetchone()
         assert outcome is not None
         assert outcome[0] == "yes"
+
+    async def test_falls_back_to_clob_and_settles_on_gamma_422(self, db, settings):
+        mid = _seed_market(db, "polymarket", "pm-clob-win")
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "polymarket", "buy_no", 10.0, 0.40, 0.006)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+
+        gamma_422 = Mock()
+        gamma_422.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Client error '422 Unprocessable Entity' for url",
+            request=httpx.Request("GET", "https://gamma-api.polymarket.com/markets/pm-clob-win"),
+            response=httpx.Response(422),
+        )
+
+        clob_ok = Mock()
+        clob_ok.raise_for_status.return_value = None
+        clob_ok.json.return_value = {
+            "closed": True,
+            "tokens": [
+                {"outcome": "Yes", "winner": False},
+                {"outcome": "No", "winner": True},
+            ],
+        }
+
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[gamma_422, clob_ok])
+
+        await resolver._fetch_polymarket_resolutions(client, [(mid, "pm-clob-win")], result)
+
+        assert result.markets_resolved == 1
+        assert result.trades_settled == 1
+        outcome = db.execute("SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)).fetchone()
+        assert outcome is not None
+        assert outcome[0] == "no"
+
+        trade = db.execute("SELECT status FROM trades WHERE market_id = ?", (mid,)).fetchone()
+        assert trade is not None
+        assert trade[0] == "settled"
+
+    async def test_does_not_settle_when_clob_market_still_open(self, db, settings):
+        mid = _seed_market(db, "polymarket", "pm-clob-open")
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "polymarket")
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+
+        gamma_422 = Mock()
+        gamma_422.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Client error '422 Unprocessable Entity' for url",
+            request=httpx.Request("GET", "https://gamma-api.polymarket.com/markets/pm-clob-open"),
+            response=httpx.Response(422),
+        )
+
+        clob_open = Mock()
+        clob_open.raise_for_status.return_value = None
+        clob_open.json.return_value = {
+            "closed": False,
+            "tokens": [{"outcome": "Yes", "winner": False}, {"outcome": "No", "winner": False}],
+        }
+
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[gamma_422, clob_open])
+
+        await resolver._fetch_polymarket_resolutions(client, [(mid, "pm-clob-open")], result)
+
+        assert result.markets_resolved == 0
+        assert result.trades_settled == 0
+        outcome = db.execute("SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)).fetchone()
+        assert outcome is None
+
+        trade = db.execute("SELECT status FROM trades WHERE market_id = ?", (mid,)).fetchone()
+        assert trade is not None
+        assert trade[0] == "open"
+
+    async def test_does_not_settle_when_clob_closed_without_winner(self, db, settings):
+        mid = _seed_market(db, "polymarket", "pm-clob-nowinner")
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "polymarket")
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+
+        gamma_422 = Mock()
+        gamma_422.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Client error '422 Unprocessable Entity' for url",
+            request=httpx.Request("GET", "https://gamma-api.polymarket.com/markets/pm-clob-nowinner"),
+            response=httpx.Response(422),
+        )
+
+        clob_closed_no_winner = Mock()
+        clob_closed_no_winner.raise_for_status.return_value = None
+        clob_closed_no_winner.json.return_value = {
+            "closed": True,
+            "tokens": [{"outcome": "Yes", "winner": False}, {"outcome": "No", "winner": False}],
+        }
+
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[gamma_422, clob_closed_no_winner])
+
+        await resolver._fetch_polymarket_resolutions(client, [(mid, "pm-clob-nowinner")], result)
+
+        assert result.markets_resolved == 0
+        assert result.trades_settled == 0
+        outcome = db.execute("SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)).fetchone()
+        assert outcome is None
+
+        trade = db.execute("SELECT status FROM trades WHERE market_id = ?", (mid,)).fetchone()
+        assert trade is not None
+        assert trade[0] == "open"
