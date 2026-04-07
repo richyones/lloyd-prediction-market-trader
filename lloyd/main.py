@@ -339,7 +339,7 @@ def _build_api_data() -> str:
                 "FROM trades t "
                 "JOIN markets m ON m.id = t.market_id "
                 "LEFT JOIN outcomes o ON o.market_id = t.market_id "
-                "WHERE t.status = 'filled' AND t.is_paper = 1 "
+                "WHERE t.status = 'settled' AND t.is_paper = 1 "
                 "ORDER BY t.closed_at DESC"
             ).fetchall()
         ]
