@@ -21,6 +21,26 @@ from typing import Any
 import httpx
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_dt(s: str) -> datetime | None:
+    """Parse an ISO datetime string, always returning a UTC-aware datetime."""
+    if not s:
+        return None
+    try:
+        # Handle Z suffix
+        s = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        # If no tzinfo, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Config — set these as GitHub Actions secrets / env vars
 # ---------------------------------------------------------------------------
 LLOYD_BASE_URL = os.environ["LLOYD_BASE_URL"]          # e.g. https://lloyd-xxx.up.railway.app
@@ -82,13 +102,8 @@ def check_resolver(data: dict) -> tuple[bool, str]:
         close_date_str = trade.get("close_date")
         if not close_date_str:
             continue
-        try:
-            # close_date may be ISO string or date-only string
-            if "T" in close_date_str:
-                close_dt = datetime.fromisoformat(close_date_str.replace("Z", "+00:00"))
-            else:
-                close_dt = datetime.fromisoformat(close_date_str).replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
+        close_dt = _parse_dt(close_date_str) if "T" in close_date_str else _parse_dt(close_date_str + "T00:00:00")
+        if close_dt is None:
             continue
 
         if close_dt < cutoff:
@@ -135,11 +150,8 @@ def check_pipeline_stuck(data: dict) -> tuple[bool, str]:
     if not latest_str:
         return True, "No created_at on predictions — check inconclusive"
 
-    try:
-        latest_dt = datetime.fromisoformat(latest_str.replace("Z", "+00:00"))
-        if latest_dt.tzinfo is None:
-            latest_dt = latest_dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
+    latest_dt = _parse_dt(latest_str)
+    if latest_dt is None:
         return True, f"Could not parse prediction timestamp: {latest_str}"
 
     now = datetime.now(timezone.utc)
@@ -170,11 +182,8 @@ def check_scan_alive(data: dict) -> tuple[bool, str]:
         return True, "No predictions yet — scan check inconclusive"
 
     latest_str = recent_predictions[0].get("created_at", "")
-    try:
-        latest_dt = datetime.fromisoformat(latest_str.replace("Z", "+00:00"))
-        if latest_dt.tzinfo is None:
-            latest_dt = latest_dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
+    latest_dt = _parse_dt(latest_str)
+    if latest_dt is None:
         return True, "Could not parse prediction timestamp"
 
     now = datetime.now(timezone.utc)
