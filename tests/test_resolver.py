@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 
 from lloyd.config import Settings
 from lloyd.db import init_db
-from lloyd.postmortem.resolver import OutcomeResolver
+from lloyd.postmortem.resolver import OutcomeResolver, ResolverResult
 
 
 @pytest.fixture()
@@ -210,3 +211,49 @@ class TestRunWithMocks:
 
         assert len(result.errors) >= 1
         assert "kalshi" in result.errors[0].lower()
+
+
+@pytest.mark.asyncio
+class TestPolymarketResolutionFetch:
+    async def test_422_one_market_does_not_block_other_market(self, db, settings):
+        bad_mid = _seed_market(db, "polymarket", "pm-422")
+        bad_ep = _seed_ensemble(db, bad_mid)
+        _seed_trade(db, bad_mid, bad_ep, "polymarket")
+
+        good_mid = _seed_market(db, "polymarket", "pm-ok")
+        good_ep = _seed_ensemble(db, good_mid)
+        _seed_trade(db, good_mid, good_ep, "polymarket")
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+
+        bad_resp = Mock()
+        bad_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Client error '422 Unprocessable Entity' for url",
+            request=httpx.Request("GET", "https://gamma-api.polymarket.com/markets/pm-422"),
+            response=httpx.Response(422),
+        )
+
+        good_resp = Mock()
+        good_resp.raise_for_status.return_value = None
+        good_resp.json.return_value = {"resolved": True, "outcome": "YES"}
+
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[bad_resp, good_resp])
+
+        await resolver._fetch_polymarket_resolutions(
+            client,
+            [(bad_mid, "pm-422"), (good_mid, "pm-ok")],
+            result,
+        )
+
+        assert any("pm-422" in err for err in result.errors)
+        assert result.markets_resolved == 1
+        assert result.trades_settled == 1
+
+        outcome = db.execute(
+            "SELECT outcome FROM outcomes WHERE market_id = ?",
+            (good_mid,),
+        ).fetchone()
+        assert outcome is not None
+        assert outcome[0] == "yes"

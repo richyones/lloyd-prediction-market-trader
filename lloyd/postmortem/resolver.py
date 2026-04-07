@@ -76,7 +76,6 @@ class OutcomeResolver:
             by_platform.setdefault(platform, []).append((market_id, platform_id))
         return by_platform
 
-    @with_retry()
     async def _fetch_polymarket_resolutions(
         self,
         client: httpx.AsyncClient,
@@ -84,8 +83,18 @@ class OutcomeResolver:
         result: ResolverResult,
     ) -> None:
         for market_id, platform_id in markets:
-            resp = await client.get(f"{GAMMA_BASE_URL}/markets/{platform_id}")
-            resp.raise_for_status()
+            try:
+                resp = await client.get(f"{GAMMA_BASE_URL}/markets/{platform_id}")
+                resp.raise_for_status()
+            except Exception as exc:
+                log.warning(
+                    "polymarket_resolution_skipped",
+                    market_id=market_id,
+                    platform_id=platform_id,
+                    error=str(exc),
+                )
+                result.errors.append(f"polymarket market {platform_id}: {exc}")
+                continue
             data = resp.json()
 
             resolved = data.get("resolved")
