@@ -11,6 +11,7 @@ from lloyd.common.models import PortfolioState
 from lloyd.config import Settings, get_settings
 from lloyd.db import (
     get_open_paper_trades,
+    get_realized_pnl,
     insert_portfolio_snapshot,
     insert_trade,
 )
@@ -122,10 +123,11 @@ class PaperExecutor(Executor):
         return False
 
     def get_portfolio_state(self) -> PortfolioState:
-        """Build current portfolio state from open paper trades."""
+        """Build current portfolio state from open paper trades and realized P&L."""
         trades = get_open_paper_trades(self._conn)
         total_exposure = sum(t.quantity * t.executed_price for t in trades)
-        cash_balance = self._s.paper_bankroll - total_exposure
+        realized_pnl = get_realized_pnl(self._conn)
+        cash_balance = self._s.paper_bankroll + realized_pnl - total_exposure
 
         positions = [
             {
@@ -151,6 +153,7 @@ class PaperExecutor(Executor):
     ) -> None:
         """Write a portfolio snapshot row. Pass trade_id -> current_price for unrealized P&L."""
         state = self.get_portfolio_state()
+        realized_pnl = get_realized_pnl(self._conn)
 
         unrealized_pnl: float | None = None
         if unrealized_prices is not None:
@@ -175,7 +178,7 @@ class PaperExecutor(Executor):
             cash_balance=state.cash_balance,
             total_exposure=state.total_exposure,
             unrealized_pnl=unrealized_pnl,
-            realized_pnl=None,
+            realized_pnl=realized_pnl,
             num_open_positions=len(state.positions),
             snapshot=snapshot_json,
         )

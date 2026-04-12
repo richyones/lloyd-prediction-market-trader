@@ -462,6 +462,15 @@ def get_open_paper_trades(conn: sqlite3.Connection) -> list[Trade]:
     ]
 
 
+def get_realized_pnl(conn: sqlite3.Connection) -> float:
+    """Sum of pnl across all settled paper trades. Returns 0.0 if none."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(pnl), 0.0) FROM trades "
+        "WHERE status = 'settled' AND is_paper = 1 AND pnl IS NOT NULL"
+    ).fetchone()
+    return float(row[0]) if row else 0.0
+
+
 def get_recent_scan_results(
     conn: sqlite3.Connection, limit: int,
 ) -> list[ScanResult]:
