@@ -189,7 +189,7 @@ class OutcomeResolver:
                 }
 
             resp = await client.get(
-                f"{base_url}/markets/{ticker}",
+                f"{base_url}/trade-api/v2/markets/{ticker}",
                 headers=headers,
             )
             resp.raise_for_status()
