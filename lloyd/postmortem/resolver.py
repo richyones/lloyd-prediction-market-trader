@@ -165,7 +165,12 @@ class OutcomeResolver:
             if key_path.exists():
                 private_key = load_pem_private_key(key_path.read_bytes(), password=None)
 
-        base_url = self._settings.kalshi_base_url.rstrip("/")
+        # Always use the live Kalshi API for resolution checks.
+        # The configured base_url may point to the demo environment for trading,
+        # but resolution data (market status/result) only appears on the live API.
+        # We also strip any path suffix (e.g. /trade-api/v2) so we can build
+        # the full path ourselves without doubling it.
+        base_url = "https://api.kalshi.com"
 
         for market_id, ticker in markets:
             path = f"/trade-api/v2/markets/{ticker}"
@@ -191,7 +196,7 @@ class OutcomeResolver:
             resp = await client.get(
                 f"{base_url}/trade-api/v2/markets/{ticker}",
                 headers=headers,
-            )
+            )  # base_url is always api.kalshi.com (no path suffix)
             resp.raise_for_status()
             data = resp.json()
             market_data = data.get("market", data)
