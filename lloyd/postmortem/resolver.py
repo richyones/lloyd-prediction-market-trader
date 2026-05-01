@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 import httpx
 import structlog
 
-from lloyd.common.retry import with_retry
 from lloyd.config import Settings
 
 log = structlog.get_logger()
@@ -146,7 +145,6 @@ class OutcomeResolver:
             result.trades_settled += settled
             result.total_pnl_realized += self._sum_pnl(market_id)
 
-    @with_retry()
     async def _fetch_kalshi_resolutions(
         self,
         client: httpx.AsyncClient,
@@ -193,33 +191,43 @@ class OutcomeResolver:
                     "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
                 }
 
-            resp = await client.get(
-                f"{base_url}/trade-api/v2/markets/{ticker}",
-                headers=headers,
-            )  # base_url is always api.kalshi.com (no path suffix)
-            resp.raise_for_status()
-            data = resp.json()
-            market_data = data.get("market", data)
+            try:
+                resp = await client.get(
+                    f"{base_url}/trade-api/v2/markets/{ticker}",
+                    headers=headers,
+                )  # base_url is always api.kalshi.com (no path suffix)
+                resp.raise_for_status()
+                data = resp.json()
+                market_data = data.get("market", data)
 
-            status = market_data.get("status", "").lower()
-            if status != "settled":
+                status = market_data.get("status", "").lower()
+                if status != "settled":
+                    continue
+
+                result_val = market_data.get("result", "").lower()
+                if result_val == "yes":
+                    outcome_str = "yes"
+                elif result_val == "no":
+                    outcome_str = "no"
+                else:
+                    outcome_str = "void"
+
+                new = self._record_outcome(market_id, "kalshi", outcome_str)
+                if new:
+                    result.markets_resolved += 1
+
+                settled = self._settle_trades(market_id, outcome_str)
+                result.trades_settled += settled
+                result.total_pnl_realized += self._sum_pnl(market_id)
+            except Exception as exc:
+                log.warning(
+                    "kalshi_resolution_skipped",
+                    market_id=market_id,
+                    ticker=ticker,
+                    error=str(exc),
+                )
+                result.errors.append(f"kalshi market {ticker}: {exc}")
                 continue
-
-            result_val = market_data.get("result", "").lower()
-            if result_val == "yes":
-                outcome_str = "yes"
-            elif result_val == "no":
-                outcome_str = "no"
-            else:
-                outcome_str = "void"
-
-            new = self._record_outcome(market_id, "kalshi", outcome_str)
-            if new:
-                result.markets_resolved += 1
-
-            settled = self._settle_trades(market_id, outcome_str)
-            result.trades_settled += settled
-            result.total_pnl_realized += self._sum_pnl(market_id)
 
     def _record_outcome(
         self, market_id: int, platform: str, outcome: str
