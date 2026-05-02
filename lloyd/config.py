@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     kalshi_rsa_key_content: str = ""
     kalshi_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
 
+    # Separate URL for resolution checks (market status/result lookups).
+    # Defaults to demo host since prod (api.kalshi.com) is unreachable on Railway.
+    # Override via LLOYD_KALSHI_RESOLUTION_BASE_URL env var when prod DNS is available.
+    kalshi_resolution_base_url: str = "https://demo-api.kalshi.co"
+
     # Scanner thresholds
     min_volume: float = 10_000
     min_liquidity: float = 1_000
