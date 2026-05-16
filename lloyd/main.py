@@ -413,7 +413,8 @@ async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 
         elif path == "/api/data":
             try:
-                body = _build_api_data().encode("utf-8")
+                loop = asyncio.get_event_loop()
+                body = await loop.run_in_executor(None, lambda: _build_api_data().encode("utf-8"))
                 writer.write(_http_response(
                     "200 OK", "application/json", body,
                     "Access-Control-Allow-Origin: *\r\n"

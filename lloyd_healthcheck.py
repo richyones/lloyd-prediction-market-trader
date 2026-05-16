@@ -66,7 +66,7 @@ def fetch_health(client: httpx.Client) -> dict[str, Any]:
 
 
 def fetch_api_data(client: httpx.Client) -> dict[str, Any]:
-    resp = client.get(f"{LLOYD_BASE_URL}/api/data", timeout=30)
+    resp = client.get(f"{LLOYD_BASE_URL}/api/data", timeout=60)
     resp.raise_for_status()
     return resp.json()
 
