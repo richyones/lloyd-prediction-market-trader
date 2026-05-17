@@ -37,6 +37,11 @@ class PolymarketClient:
                 "offset": offset,
             },
         )
+        # Gamma API returns 422 when offset exceeds its pagination limit (~10k).
+        # Treat this as end-of-results rather than a fatal error.
+        if resp.status_code == 422:
+            log.warning("polymarket_pagination_limit", offset=offset)
+            return []
         resp.raise_for_status()
         return resp.json()
 
@@ -47,7 +52,10 @@ class PolymarketClient:
         pages = 0
         parse_failures = 0
 
-        while True:
+        # Gamma API hard cap is ~10k rows; stop before we hit a 422.
+        MAX_OFFSET = 10000
+
+        while offset <= MAX_OFFSET:
             raw_page = await self._fetch_page(offset, PAGE_LIMIT)
             pages += 1
 
