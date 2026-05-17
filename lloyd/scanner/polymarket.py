@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -65,6 +66,10 @@ class PolymarketClient:
                     markets.append(market)
                 else:
                     parse_failures += 1
+
+            # Yield to the event loop every 10 pages.
+            if pages % 10 == 0:
+                await asyncio.sleep(0)
 
             if len(raw_page) < PAGE_LIMIT:
                 break

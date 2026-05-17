@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from datetime import datetime, timezone
@@ -123,6 +124,11 @@ class KalshiClient:
                     markets.append(market)
                 else:
                     parse_failures += 1
+
+            # Yield to the event loop every 10 pages so the health server
+            # can respond during long fetches (65k+ markets = many CPU cycles).
+            if pages % 10 == 0:
+                await asyncio.sleep(0)
 
             if not cursor:
                 break
