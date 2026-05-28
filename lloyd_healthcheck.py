@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -37,6 +39,8 @@ DAILY_COST_CRITICAL_USD = float(os.environ.get("DAILY_COST_CRITICAL_USD", "35.0"
 DAILY_COST_WARN_MULTIPLIER = float(os.environ.get("DAILY_COST_WARN_MULTIPLIER", "1.25"))
 DAILY_COST_HIGH_MULTIPLIER = float(os.environ.get("DAILY_COST_HIGH_MULTIPLIER", "1.5"))
 DAILY_COST_CRITICAL_MULTIPLIER = float(os.environ.get("DAILY_COST_CRITICAL_MULTIPLIER", "2.0"))
+API_DATA_FETCH_ATTEMPTS = int(os.environ.get("API_DATA_FETCH_ATTEMPTS", "2"))
+API_DATA_RETRY_BACKOFF_SECONDS = float(os.environ.get("API_DATA_RETRY_BACKOFF_SECONDS", "2.0"))
 
 SEVERITY_ORDER = {"info": 0, "warning": 1, "high": 2, "critical": 3}
 
@@ -68,18 +72,30 @@ def _incident_id(check_name: str, detail: str) -> str:
 
 def _send_slack(message: str) -> None:
     if not SLACK_WEBHOOK_URL:
+        print("[notify] slack webhook not configured")
         return
-    httpx.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
+    try:
+        resp = httpx.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
+        resp.raise_for_status()
+        print("[notify] slack delivered")
+    except Exception as exc:
+        print(f"[notify] slack delivery failed: {exc}")
 
 
 def _send_telegram(message: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[notify] telegram not configured")
         return
-    httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
-        timeout=10,
-    )
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print("[notify] telegram delivered")
+    except Exception as exc:
+        print(f"[notify] telegram delivery failed: {exc}")
 
 
 def notify(payload: dict[str, Any], immediate: bool = False) -> None:
@@ -108,9 +124,23 @@ def fetch_health(client: httpx.Client) -> dict[str, Any]:
 
 
 def fetch_api_data(client: httpx.Client) -> dict[str, Any]:
-    resp = client.get(f"{LLOYD_BASE_URL}/api/data", timeout=60)
-    resp.raise_for_status()
-    return resp.json()
+    # Retry transient timeouts to reduce noisy critical alerts.
+    last_exc: Exception | None = None
+    attempts = max(API_DATA_FETCH_ATTEMPTS, 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = client.get(f"{LLOYD_BASE_URL}/api/data", timeout=90)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            last_exc = exc
+            if attempt == attempts:
+                break
+            sleep_s = API_DATA_RETRY_BACKOFF_SECONDS * attempt + random.uniform(0, 0.5)
+            print(f"[api_data] attempt {attempt}/{attempts} failed: {exc}; retrying in {sleep_s:.1f}s")
+            time.sleep(sleep_s)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _make_finding(

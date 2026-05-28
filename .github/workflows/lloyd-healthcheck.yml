@@ -40,4 +40,6 @@ jobs:
           DAILY_COST_WARN_MULTIPLIER: "1.25"
           DAILY_COST_HIGH_MULTIPLIER: "1.5"
           DAILY_COST_CRITICAL_MULTIPLIER: "2.0"
+          API_DATA_FETCH_ATTEMPTS: "2"
+          API_DATA_RETRY_BACKOFF_SECONDS: "2.0"
         run: python lloyd_healthcheck.py
