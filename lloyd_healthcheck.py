@@ -1,38 +1,51 @@
-"""
-Lloyd Health Check — runs every 6 hours via GitHub Actions.
-
-Checks:
-  1. Resolver silent failure — open trades past close_date + zero resolver activity
-  2. Pipeline stuck — recent_predictions has entries but they're stale (no stage_2 in 8h)
-  3. Scan crash — no predictions generated in last 10h (scan stopped producing candidates)
-  4. LLM cost spike — any prediction cycle in the last 24h cost > $2
-  5. Container liveness — /health returns 200
-
-Sends a Slack (or Telegram) message if any check fails.
-On a clean run, sends a brief weekly digest (Mondays only) so you know it's working.
-"""
+"""Contract-based health and triage monitor for Lloyd deployment."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
+from statistics import median
 from typing import Any
 
 import httpx
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Config
 # ---------------------------------------------------------------------------
 
+LLOYD_BASE_URL = os.environ["LLOYD_BASE_URL"]
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+ENVIRONMENT = os.environ.get("LLOYD_ENVIRONMENT", "production")
+
+MAX_COST_PER_CYCLE_USD = float(os.environ.get("MAX_COST_PER_CYCLE_USD", "2.0"))
+PIPELINE_STUCK_HOURS = int(os.environ.get("PIPELINE_STUCK_HOURS", "4"))
+SCAN_DEAD_HOURS = int(os.environ.get("SCAN_DEAD_HOURS", "6"))
+RESOLVER_LOOKBACK_DAYS = int(os.environ.get("RESOLVER_LOOKBACK_DAYS", "3"))
+RESOLVER_HIGH_COUNT = int(os.environ.get("RESOLVER_HIGH_COUNT", "5"))
+
+CYCLE_COST_HIGH_USD = float(os.environ.get("CYCLE_COST_HIGH_USD", "3.0"))
+CYCLE_COST_CRITICAL_USD = float(os.environ.get("CYCLE_COST_CRITICAL_USD", "5.0"))
+DAILY_COST_HIGH_USD = float(os.environ.get("DAILY_COST_HIGH_USD", "20.0"))
+DAILY_COST_CRITICAL_USD = float(os.environ.get("DAILY_COST_CRITICAL_USD", "35.0"))
+
+DAILY_COST_WARN_MULTIPLIER = float(os.environ.get("DAILY_COST_WARN_MULTIPLIER", "1.25"))
+DAILY_COST_HIGH_MULTIPLIER = float(os.environ.get("DAILY_COST_HIGH_MULTIPLIER", "1.5"))
+DAILY_COST_CRITICAL_MULTIPLIER = float(os.environ.get("DAILY_COST_CRITICAL_MULTIPLIER", "2.0"))
+
+SEVERITY_ORDER = {"info": 0, "warning": 1, "high": 2, "critical": 3}
+
+
 def _parse_dt(s: str) -> datetime | None:
-    """Parse an ISO datetime string, always returning a UTC-aware datetime."""
     if not s:
         return None
     try:
-        # Handle Z suffix
-        s = s.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        # If no tzinfo, assume UTC
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
@@ -40,24 +53,53 @@ def _parse_dt(s: str) -> datetime | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Config — set these as GitHub Actions secrets / env vars
-# ---------------------------------------------------------------------------
-LLOYD_BASE_URL = os.environ["LLOYD_BASE_URL"]          # e.g. https://lloyd-xxx.up.railway.app
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-# Thresholds
-MAX_COST_PER_CYCLE_USD = float(os.environ.get("MAX_COST_PER_CYCLE_USD", "2.0"))
-PIPELINE_STUCK_HOURS = int(os.environ.get("PIPELINE_STUCK_HOURS", "8"))   # no stage_2 in 8h = stuck
-SCAN_DEAD_HOURS = int(os.environ.get("SCAN_DEAD_HOURS", "10"))            # no predictions in 10h = scan dead
-RESOLVER_LOOKBACK_DAYS = int(os.environ.get("RESOLVER_LOOKBACK_DAYS", "3"))  # look at trades closing in past N days
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Fetch helpers
-# ---------------------------------------------------------------------------
+def _run_id() -> str:
+    return f"run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+
+def _incident_id(check_name: str, detail: str) -> str:
+    basis = f"{check_name}|{detail[:160]}"
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+
+
+def _send_slack(message: str) -> None:
+    if not SLACK_WEBHOOK_URL:
+        return
+    httpx.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
+
+
+def _send_telegram(message: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    httpx.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+        timeout=10,
+    )
+
+
+def notify(payload: dict[str, Any], immediate: bool = False) -> None:
+    """Deliver contract payload as compact JSON text."""
+    # Prefix helps scanning notifier channels while preserving strict payload.
+    prefix = "[IMMEDIATE] " if immediate else ""
+    body = json.dumps(payload, ensure_ascii=True)
+    message = f"{prefix}{body}"
+    _send_slack(message)
+    _send_telegram(message)
+    print(message)
+
+
+def _base_contract(run_id: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "timestamp_utc": _now_iso(),
+        "environment": ENVIRONMENT,
+    }
+
 
 def fetch_health(client: httpx.Client) -> dict[str, Any]:
     resp = client.get(f"{LLOYD_BASE_URL}/health", timeout=15)
@@ -71,298 +113,338 @@ def fetch_api_data(client: httpx.Client) -> dict[str, Any]:
     return resp.json()
 
 
-# ---------------------------------------------------------------------------
-# Individual checks — each returns (passed: bool, detail: str)
-# ---------------------------------------------------------------------------
+def _make_finding(
+    check_name: str,
+    severity: str,
+    confidence: str,
+    risk_tags: list[str],
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "check_name": check_name,
+        "severity": severity,
+        "confidence": confidence,
+        "risk_tags": risk_tags or ["none"],
+        "detail": detail,
+        "incident_id": _incident_id(check_name, detail),
+    }
 
-def check_liveness(health: dict) -> tuple[bool, str]:
-    """Check 0: container is alive and /health returns ok."""
-    if health.get("status") == "ok":
-        return True, "Container healthy"
-    return False, f"Unexpected /health response: {health}"
 
-
-def check_resolver(data: dict) -> tuple[bool, str]:
-    """
-    Check 1: Resolver silent failure.
-
-    Looks for open trades whose close_date is in the past (past resolution window).
-    These should have been settled. If any exist AND cost_by_day shows recent activity
-    (meaning the bot is running), the resolver is silently failing.
-    """
+def check_resolver(data: dict[str, Any]) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=RESOLVER_LOOKBACK_DAYS)
-
-    open_trades: list[dict] = data.get("open_trades", [])
+    open_trades: list[dict[str, Any]] = data.get("open_trades", [])
     if not open_trades:
-        return True, "No open trades — resolver check skipped"
+        return None
 
-    overdue = []
+    overdue: list[dict[str, str]] = []
     for trade in open_trades:
         close_date_str = trade.get("close_date")
         if not close_date_str:
             continue
-        close_dt = _parse_dt(close_date_str) if "T" in close_date_str else _parse_dt(close_date_str + "T00:00:00")
-        if close_dt is None:
-            continue
-
-        if close_dt < cutoff:
-            overdue.append({
-                "question": trade.get("question", "unknown")[:60],
-                "close_date": close_date_str,
-                "platform": trade.get("platform", "?"),
-            })
+        close_dt = _parse_dt(close_date_str if "T" in close_date_str else f"{close_date_str}T00:00:00")
+        if close_dt and close_dt < cutoff:
+            overdue.append(
+                {
+                    "platform": str(trade.get("platform", "?")),
+                    "question": str(trade.get("question", "unknown"))[:60],
+                    "close_date": close_date_str,
+                }
+            )
 
     if not overdue:
-        return True, f"No trades overdue beyond {RESOLVER_LOOKBACK_DAYS}d close date"
+        return None
 
-    # Only flag if the bot is clearly still running (has recent cost_by_day entries)
-    cost_by_day: list[dict] = data.get("cost_by_day", [])
-    recent_days = [
-        d for d in cost_by_day
-        if d.get("day", "") >= (now - timedelta(days=2)).strftime("%Y-%m-%d")
-    ]
-    if not recent_days:
-        return True, "No recent prediction activity — bot may be idle, resolver check inconclusive"
-
+    severity = "high" if len(overdue) > RESOLVER_HIGH_COUNT else "warning"
     detail = (
-        f"⚠️ *{len(overdue)} open trade(s) past close_date by >{RESOLVER_LOOKBACK_DAYS} days* "
-        f"but resolver hasn't settled them:\n"
-        + "\n".join(f"  • {t['platform']}: {t['question']} (closed {t['close_date']})" for t in overdue[:5])
+        f"{len(overdue)} overdue open trade(s) beyond {RESOLVER_LOOKBACK_DAYS}d: "
+        + "; ".join(f"{x['platform']}:{x['question']}({x['close_date']})" for x in overdue[:3])
     )
-    return False, detail
+    return _make_finding(
+        "resolver_overdue",
+        severity,
+        "medium",
+        ["functionality"],
+        detail,
+    )
 
 
-def check_pipeline_stuck(data: dict) -> tuple[bool, str]:
-    """
-    Check 2: Prediction pipeline stuck.
-
-    If the most recent prediction in recent_predictions is older than PIPELINE_STUCK_HOURS,
-    and cost_by_day shows the bot was running recently, the pipeline is stuck.
-    """
-    recent_predictions: list[dict] = data.get("recent_predictions", [])
+def _latest_prediction_age_hours(data: dict[str, Any]) -> float | None:
+    recent_predictions: list[dict[str, Any]] = data.get("recent_predictions", [])
     if not recent_predictions:
-        # Could be day 1 or a fresh reset — not actionable on its own
-        return True, "No predictions yet — pipeline check inconclusive"
-
-    # Most recent prediction timestamp
-    latest_str = recent_predictions[0].get("created_at", "")
-    if not latest_str:
-        return True, "No created_at on predictions — check inconclusive"
-
-    latest_dt = _parse_dt(latest_str)
-    if latest_dt is None:
-        return True, f"Could not parse prediction timestamp: {latest_str}"
-
-    now = datetime.now(timezone.utc)
-    hours_since = (now - latest_dt).total_seconds() / 3600
-
-    if hours_since > PIPELINE_STUCK_HOURS:
-        return False, (
-            f"⚠️ *Prediction pipeline appears stuck* — last prediction was "
-            f"{hours_since:.1f}h ago (threshold: {PIPELINE_STUCK_HOURS}h).\n"
-            f"Last prediction: `{latest_str}`"
-        )
-
-    return True, f"Last prediction {hours_since:.1f}h ago — pipeline healthy"
-
-
-def check_scan_alive(data: dict) -> tuple[bool, str]:
-    """
-    Check 3: Scan cycle producing candidates.
-
-    Uses recent_predictions as a proxy — if predictions exist at all, scans are feeding
-    candidates to the LLM. If last prediction is >SCAN_DEAD_HOURS old, scan may have crashed.
-    Note: this overlaps with check_pipeline_stuck intentionally — the same symptom
-    (no recent predictions) could mean either scan crashed OR prediction pipeline stuck.
-    We keep both checks with different thresholds and messaging.
-    """
-    recent_predictions: list[dict] = data.get("recent_predictions", [])
-    if not recent_predictions:
-        return True, "No predictions yet — scan check inconclusive"
-
+        return None
     latest_str = recent_predictions[0].get("created_at", "")
     latest_dt = _parse_dt(latest_str)
     if latest_dt is None:
-        return True, "Could not parse prediction timestamp"
+        return None
+    return (datetime.now(timezone.utc) - latest_dt).total_seconds() / 3600
 
-    now = datetime.now(timezone.utc)
-    hours_since = (now - latest_dt).total_seconds() / 3600
 
-    if hours_since > SCAN_DEAD_HOURS:
-        return False, (
-            f"⚠️ *Scan may be dead* — no new predictions in {hours_since:.1f}h "
-            f"(threshold: {SCAN_DEAD_HOURS}h). Either scan is crashing or pipeline is fully stuck."
+def check_pipeline_stuck(data: dict[str, Any]) -> dict[str, Any] | None:
+    hours_since = _latest_prediction_age_hours(data)
+    if hours_since is None:
+        return _make_finding(
+            "pipeline_stuck",
+            "warning",
+            "low",
+            ["functionality"],
+            "Unable to determine latest prediction timestamp",
         )
-    return True, f"Scan alive — predictions flowing ({hours_since:.1f}h since last)"
+    if hours_since <= PIPELINE_STUCK_HOURS:
+        return None
+    severity = "high" if hours_since <= PIPELINE_STUCK_HOURS * 2 else "critical"
+    return _make_finding(
+        "pipeline_stuck",
+        severity,
+        "high",
+        ["functionality"],
+        f"Last prediction {hours_since:.1f}h ago (threshold {PIPELINE_STUCK_HOURS}h)",
+    )
 
 
-def check_cost_spike(data: dict) -> tuple[bool, str]:
-    """
-    Check 5: LLM cost spike.
+def check_scan_dead(data: dict[str, Any]) -> dict[str, Any] | None:
+    hours_since = _latest_prediction_age_hours(data)
+    if hours_since is None:
+        return None
+    if hours_since <= SCAN_DEAD_HOURS:
+        return None
+    severity = "high" if hours_since <= SCAN_DEAD_HOURS * 2 else "critical"
+    return _make_finding(
+        "scan_dead",
+        severity,
+        "high",
+        ["functionality"],
+        f"No fresh prediction in {hours_since:.1f}h (threshold {SCAN_DEAD_HOURS}h)",
+    )
 
-    Looks at cost_by_day for today and yesterday. Flags if daily spend > $10
-    (a rough proxy for a per-cycle spike — MAX_COST_PER_CYCLE_USD * ~5 cycles/day = $10).
-    Also looks at recent_predictions for any single-cycle cost outlier.
-    """
+
+def check_cost_spike(data: dict[str, Any]) -> dict[str, Any] | None:
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
-    yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    cost_by_day: list[dict[str, Any]] = data.get("cost_by_day", [])
+    daily_map = {str(x.get("day", "")): float(x.get("daily_cost") or 0) for x in cost_by_day}
+    today_cost = daily_map.get(today_str, 0.0)
 
-    cost_by_day: list[dict] = data.get("cost_by_day", [])
-    daily_threshold = MAX_COST_PER_CYCLE_USD * 8  # ~8 prediction cycles/day max
+    trailing_vals = [
+        v
+        for day, v in daily_map.items()
+        if day != today_str and _parse_dt(f"{day}T00:00:00+00:00")
+    ]
+    baseline = median(trailing_vals[-7:]) if trailing_vals else 0.0
 
-    alerts = []
-    for entry in cost_by_day:
-        day = entry.get("day", "")
-        daily_cost = float(entry.get("daily_cost") or 0)
-        if day in (today_str, yesterday_str) and daily_cost > daily_threshold:
-            alerts.append(f"  • {day}: ${daily_cost:.2f} (threshold: ${daily_threshold:.2f})")
+    severity = "info"
+    reasons: list[str] = []
 
-    # Also scan individual recent predictions for per-cycle cost
-    recent_predictions: list[dict] = data.get("recent_predictions", [])
-    cycle_alerts = []
-    for pred in recent_predictions:
-        cost = float(pred.get("total_cost") or 0)
-        if cost > MAX_COST_PER_CYCLE_USD:
-            created_at = pred.get("created_at", "unknown")[:16]
-            cycle_alerts.append(f"  • {created_at}: ${cost:.2f}")
+    if today_cost > DAILY_COST_CRITICAL_USD:
+        severity = "critical"
+        reasons.append(f"daily ${today_cost:.2f} > ${DAILY_COST_CRITICAL_USD:.2f}")
+    elif today_cost > DAILY_COST_HIGH_USD:
+        severity = "high"
+        reasons.append(f"daily ${today_cost:.2f} > ${DAILY_COST_HIGH_USD:.2f}")
 
-    if not alerts and not cycle_alerts:
-        total_today = next(
-            (float(e.get("daily_cost") or 0) for e in cost_by_day if e.get("day") == today_str), 0
-        )
-        return True, f"LLM costs normal — today: ${total_today:.2f}"
+    if baseline > 0:
+        ratio = today_cost / baseline
+        if ratio >= DAILY_COST_CRITICAL_MULTIPLIER:
+            severity = "critical"
+            reasons.append(f"{ratio:.2f}x above 7d median")
+        elif ratio >= DAILY_COST_HIGH_MULTIPLIER and SEVERITY_ORDER[severity] < SEVERITY_ORDER["high"]:
+            severity = "high"
+            reasons.append(f"{ratio:.2f}x above 7d median")
+        elif ratio >= DAILY_COST_WARN_MULTIPLIER and SEVERITY_ORDER[severity] < SEVERITY_ORDER["warning"]:
+            severity = "warning"
+            reasons.append(f"{ratio:.2f}x above 7d median")
 
-    msg = "⚠️ *LLM cost spike detected*\n"
-    if alerts:
-        msg += "Daily spend over threshold:\n" + "\n".join(alerts) + "\n"
-    if cycle_alerts:
-        msg += f"Individual prediction cycles over ${MAX_COST_PER_CYCLE_USD:.2f}:\n" + "\n".join(cycle_alerts[:5])
-    return False, msg
+    cycle_costs = [
+        float(pred.get("total_cost") or 0)
+        for pred in data.get("recent_predictions", [])
+        if pred.get("total_cost") is not None
+    ]
+    max_cycle = max(cycle_costs) if cycle_costs else 0.0
+    if max_cycle > CYCLE_COST_CRITICAL_USD:
+        severity = "critical"
+        reasons.append(f"cycle ${max_cycle:.2f} > ${CYCLE_COST_CRITICAL_USD:.2f}")
+    elif max_cycle > CYCLE_COST_HIGH_USD and SEVERITY_ORDER[severity] < SEVERITY_ORDER["high"]:
+        severity = "high"
+        reasons.append(f"cycle ${max_cycle:.2f} > ${CYCLE_COST_HIGH_USD:.2f}")
+    elif max_cycle > MAX_COST_PER_CYCLE_USD and SEVERITY_ORDER[severity] < SEVERITY_ORDER["warning"]:
+        severity = "warning"
+        reasons.append(f"cycle ${max_cycle:.2f} > ${MAX_COST_PER_CYCLE_USD:.2f}")
 
+    if SEVERITY_ORDER[severity] == 0:
+        return None
 
-# ---------------------------------------------------------------------------
-# Notification
-# ---------------------------------------------------------------------------
-
-def send_slack(message: str) -> None:
-    if not SLACK_WEBHOOK_URL:
-        return
-    httpx.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
-
-
-def send_telegram(message: str) -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown",
-        },
-        timeout=10,
+    confidence = "high" if baseline > 0 or max_cycle > 0 else "medium"
+    return _make_finding(
+        "cost_spike",
+        severity,
+        confidence,
+        ["cost"],
+        "; ".join(reasons) if reasons else "Cost anomaly detected",
     )
 
 
-def notify(message: str) -> None:
-    """Send to whichever notification channel is configured."""
-    send_slack(message)
-    send_telegram(message)
-    print(message)
+def should_escalate(finding: dict[str, Any]) -> bool:
+    severity = finding["severity"]
+    confidence = finding["confidence"]
+    risk_tags = set(finding.get("risk_tags", []))
+    if severity == "critical":
+        return True
+    if confidence == "low":
+        return True
+    if severity == "high" and ("cost" in risk_tags or "functionality" in risk_tags):
+        return True
+    return False
 
 
-# ---------------------------------------------------------------------------
-# Weekly digest (sent on Mondays, clean-run only)
-# ---------------------------------------------------------------------------
-
-def build_digest(data: dict) -> str:
-    now = datetime.now(timezone.utc)
-    portfolio = data.get("portfolio") or {}
-    open_trades = data.get("open_trades", [])
-    cost_by_day = data.get("cost_by_day", [])
-
-    total_cost_7d = sum(float(e.get("daily_cost") or 0) for e in cost_by_day)
-    cash = portfolio.get("cash_balance")
-    exposure = portfolio.get("total_exposure")
-    pnl = portfolio.get("unrealized_pnl")
-
-    lines = [
-        f"📊 *Lloyd Weekly Digest* — {now.strftime('%Y-%m-%d %H:%M UTC')}",
-        f"  • Open trades: {len(open_trades)}",
-        f"  • Cash balance: ${cash:.2f}" if cash is not None else "  • Cash balance: n/a",
-        f"  • Total exposure: ${exposure:.2f}" if exposure is not None else "  • Total exposure: n/a",
-        f"  • Unrealized PnL: ${pnl:.2f}" if pnl is not None else "  • Unrealized PnL: n/a",
-        f"  • LLM cost (7d): ${total_cost_7d:.2f}",
-        f"  • All checks passed ✅",
-    ]
-    return "\n".join(lines)
+def build_routine_digest(run_id: str, checks_run: list[str], status_summary: str, deltas: list[str]) -> dict[str, Any]:
+    payload = _base_contract(run_id)
+    payload.update(
+        {
+            "type": "routine_digest",
+            "checks_run": checks_run,
+            "status_summary": status_summary,
+            "changes_since_last_run": deltas[:3],
+            "action_required": "no",
+        }
+    )
+    return payload
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def build_autotriage_report(run_id: str, finding: dict[str, Any]) -> dict[str, Any]:
+    payload = _base_contract(run_id)
+    payload.update(
+        {
+            "type": "autotriage_report",
+            "incident_id": finding["incident_id"],
+            "severity": finding["severity"],
+            "confidence": finding["confidence"],
+            "risk_tags": finding["risk_tags"],
+            "what_was_done": ["Gathered health + api data", f"Classified finding: {finding['check_name']}"],
+            "why": finding["detail"],
+            "result": "unchanged",
+            "rollback_path": "not_needed",
+            "action_required": "no",
+        }
+    )
+    return payload
+
+
+def build_escalation(run_id: str, finding: dict[str, Any]) -> dict[str, Any]:
+    payload = _base_contract(run_id)
+    payload.update(
+        {
+            "type": "escalation",
+            "incident_id": finding["incident_id"],
+            "severity": finding["severity"],
+            "confidence": finding["confidence"],
+            "risk_tags": finding["risk_tags"],
+            "evidence": [finding["detail"]],
+            "recommended_safest_action": f"Investigate {finding['check_name']} before applying production changes",
+            "alternative_actions": [
+                "Increase observation window and re-check in next run (lower risk, slower response)",
+                "Apply targeted mitigation immediately (faster, higher regression risk)",
+            ],
+            "decision_needed_by": (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0).isoformat(),
+            "action_required": "yes",
+        }
+    )
+    return payload
+
 
 def main() -> int:
-    now = datetime.now(timezone.utc)
-    is_monday = now.weekday() == 0
-
-    failures: list[str] = []
+    run_id = _run_id()
+    checks_run = ["/health", "/api/data", "resolver_overdue", "pipeline_stuck", "scan_dead", "cost_spike"]
+    findings: list[dict[str, Any]] = []
 
     try:
         with httpx.Client() as client:
-            # Liveness check
+            # /health must be strict critical
             try:
                 health = fetch_health(client)
-                passed, detail = check_liveness(health)
-                if not passed:
-                    failures.append(detail)
-                print(f"[liveness] {'✅' if passed else '❌'} {detail}")
             except Exception as exc:
-                failures.append(f"🚨 *Container unreachable* — /health failed: {exc}")
-                print(f"[liveness] ❌ {exc}")
-                # Can't proceed without the container — notify immediately
-                notify("\n".join(failures))
+                finding = _make_finding(
+                    "health_endpoint",
+                    "critical",
+                    "high",
+                    ["functionality"],
+                    f"/health unreachable: {exc}",
+                )
+                notify(build_escalation(run_id, finding), immediate=True)
                 return 1
 
-            # API data checks
+            if health.get("status") != "ok":
+                finding = _make_finding(
+                    "health_endpoint",
+                    "critical",
+                    "high",
+                    ["functionality"],
+                    f"/health returned unexpected payload: {health}",
+                )
+                notify(build_escalation(run_id, finding), immediate=True)
+                return 1
+
             try:
                 data = fetch_api_data(client)
             except Exception as exc:
-                failures.append(f"🚨 *API data unavailable* — /api/data failed: {exc}")
-                notify("\n".join(failures))
+                finding = _make_finding(
+                    "api_data_endpoint",
+                    "critical",
+                    "high",
+                    ["functionality"],
+                    f"/api/data unavailable: {exc}",
+                )
+                notify(build_escalation(run_id, finding), immediate=True)
                 return 1
 
-            checks = [
-                ("resolver", check_resolver(data)),
-                ("pipeline", check_pipeline_stuck(data)),
-                ("scan", check_scan_alive(data)),
-                ("cost", check_cost_spike(data)),
-            ]
-
-            for name, (passed, detail) in checks:
-                print(f"[{name}] {'✅' if passed else '❌'} {detail}")
-                if not passed:
-                    failures.append(detail)
+            for check_fn in (check_resolver, check_pipeline_stuck, check_scan_dead, check_cost_spike):
+                finding = check_fn(data)
+                if finding:
+                    findings.append(finding)
+                    print(f"[{finding['check_name']}] {finding['severity']} {finding['detail']}")
+                else:
+                    print(f"[{check_fn.__name__}] ok")
 
     except Exception as exc:
-        failures.append(f"🚨 Health check script crashed: {exc}")
-        notify("\n".join(failures))
+        finding = _make_finding(
+            "healthcheck_script",
+            "critical",
+            "low",
+            ["functionality"],
+            f"Script crashed unexpectedly: {exc}",
+        )
+        notify(build_escalation(run_id, finding), immediate=True)
         return 1
 
-    if failures:
-        header = f"🚨 *Lloyd Health Alert* — {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
-        notify(header + "\n\n".join(failures))
-        return 1
+    if not findings:
+        notify(
+            build_routine_digest(
+                run_id,
+                checks_run,
+                "pass",
+                ["All checks healthy", "No action needed"],
+            )
+        )
+        return 0
 
-    # Clean run
-    if is_monday:
-        notify(build_digest(data))
-    else:
-        print("All checks passed — no notification sent (not Monday)")
+    exit_code = 0
+    for finding in findings:
+        if should_escalate(finding):
+            notify(build_escalation(run_id, finding), immediate=(finding["severity"] == "critical"))
+            exit_code = 1
+        else:
+            notify(build_autotriage_report(run_id, finding))
 
-    return 0
+    if exit_code == 0:
+        notify(
+            build_routine_digest(
+                run_id,
+                checks_run,
+                "degraded",
+                [f"{len(findings)} non-escalated finding(s) triaged"],
+            )
+        )
+
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -27,8 +27,17 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LLOYD_ENVIRONMENT: "production"
           MAX_COST_PER_CYCLE_USD: "2.0"
-          PIPELINE_STUCK_HOURS: "8"
-          SCAN_DEAD_HOURS: "10"
-          RESOLVER_LOOKBACK_DAYS: "10"
+          PIPELINE_STUCK_HOURS: "4"
+          SCAN_DEAD_HOURS: "6"
+          RESOLVER_LOOKBACK_DAYS: "3"
+          RESOLVER_HIGH_COUNT: "5"
+          CYCLE_COST_HIGH_USD: "3.0"
+          CYCLE_COST_CRITICAL_USD: "5.0"
+          DAILY_COST_HIGH_USD: "20.0"
+          DAILY_COST_CRITICAL_USD: "35.0"
+          DAILY_COST_WARN_MULTIPLIER: "1.25"
+          DAILY_COST_HIGH_MULTIPLIER: "1.5"
+          DAILY_COST_CRITICAL_MULTIPLIER: "2.0"
         run: python lloyd_healthcheck.py
