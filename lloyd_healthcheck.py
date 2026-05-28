@@ -18,10 +18,7 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-LLOYD_BASE_URL = os.environ["LLOYD_BASE_URL"]
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+LLOYD_BASE_URL = os.environ["LLOYD_BASE_URL"].strip()
 
 ENVIRONMENT = os.environ.get("LLOYD_ENVIRONMENT", "production")
 
@@ -71,11 +68,12 @@ def _incident_id(check_name: str, detail: str) -> str:
 
 
 def _send_slack(message: str) -> None:
-    if not SLACK_WEBHOOK_URL:
+    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+    if not slack_webhook_url:
         print("[notify] slack webhook not configured")
         return
     try:
-        resp = httpx.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
+        resp = httpx.post(slack_webhook_url, json={"text": message}, timeout=10)
         resp.raise_for_status()
         print("[notify] slack delivered")
     except Exception as exc:
@@ -83,13 +81,15 @@ def _send_slack(message: str) -> None:
 
 
 def _send_telegram(message: str) -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not telegram_bot_token or not telegram_chat_id:
         print("[notify] telegram not configured")
         return
     try:
         resp = httpx.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+            f"https://api.telegram.org/bot{telegram_bot_token}/sendMessage",
+            json={"chat_id": telegram_chat_id, "text": message},
             timeout=10,
         )
         resp.raise_for_status()

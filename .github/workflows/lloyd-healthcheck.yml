@@ -61,4 +61,9 @@ jobs:
           DAILY_COST_CRITICAL_MULTIPLIER: "2.0"
           API_DATA_FETCH_ATTEMPTS: "2"
           API_DATA_RETRY_BACKOFF_SECONDS: "2.0"
-        run: python lloyd_healthcheck.py
+        run: |
+          echo "RUNSTEP_LLOYD_BASE_URL_SET=$([ -n \"$LLOYD_BASE_URL\" ] && echo true || echo false)"
+          echo "RUNSTEP_SLACK_WEBHOOK_URL_SET=$([ -n \"$SLACK_WEBHOOK_URL\" ] && echo true || echo false)"
+          echo "RUNSTEP_TELEGRAM_BOT_TOKEN_SET=$([ -n \"$TELEGRAM_BOT_TOKEN\" ] && echo true || echo false)"
+          echo "RUNSTEP_TELEGRAM_CHAT_ID_SET=$([ -n \"$TELEGRAM_CHAT_ID\" ] && echo true || echo false)"
+          python lloyd_healthcheck.py
