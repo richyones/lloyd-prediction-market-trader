@@ -26,12 +26,28 @@ class ResolverResult:
 
 
 class OutcomeResolver:
+    # Trade IDs with confirmed outcomes that were never resolved because the
+    # Kalshi production API is unreachable from Railway (DNS failure).
+    # Populated May 27, 2026. Idempotent — no-op after first successful run.
+    _KALSHI_STUCK_OVERRIDES: dict[int, str] = {
+        22: "no",  # Aberg did not win PGA — Aaron Rai won
+        36: "no",  # Poston did not win PGA — Aaron Rai won
+        24: "no",  # Hormuz 7-day avg never exceeded 60 before May 15
+        25: "no",  # Same market as 24, duplicate position
+        27: "no",  # Same market as 24, duplicate position
+    }
+
     def __init__(self, conn: sqlite3.Connection, settings: Settings) -> None:
         self._conn = conn
         self._settings = settings
 
     async def run(self) -> ResolverResult:
         result = ResolverResult()
+
+        # One-off migration: settle known-stuck Kalshi trades with confirmed
+        # outcomes. Idempotent — skips already-settled trades. Can be removed
+        # once all 5 trades (IDs 22, 24, 25, 27, 36) show status='settled'.
+        self._settle_stuck_kalshi_overrides(result)
 
         market_ids_by_platform = self._get_open_trade_platforms()
         if not market_ids_by_platform:
@@ -167,6 +183,7 @@ class OutcomeResolver:
         # Defaults to demo-api.kalshi.co. Switch to api.kalshi.com if/when
         # Railway's DNS can reach the production Kalshi endpoint.
         base_url = self._settings.kalshi_resolution_base_url
+        now_utc = datetime.now(timezone.utc)
 
         for market_id, ticker in markets:
             path = f"/trade-api/v2/markets/{ticker}"
@@ -189,6 +206,8 @@ class OutcomeResolver:
                     "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
                 }
 
+            outcome_str: str | None = None
+
             try:
                 resp = await client.get(
                     f"{base_url}/trade-api/v2/markets/{ticker}",
@@ -199,24 +218,14 @@ class OutcomeResolver:
                 market_data = data.get("market", data)
 
                 status = market_data.get("status", "").lower()
-                if status != "settled":
-                    continue
-
-                result_val = market_data.get("result", "").lower()
-                if result_val == "yes":
-                    outcome_str = "yes"
-                elif result_val == "no":
-                    outcome_str = "no"
-                else:
-                    outcome_str = "void"
-
-                new = self._record_outcome(market_id, "kalshi", outcome_str)
-                if new:
-                    result.markets_resolved += 1
-
-                settled = self._settle_trades(market_id, outcome_str)
-                result.trades_settled += settled
-                result.total_pnl_realized += self._sum_pnl(market_id)
+                if status == "settled":
+                    result_val = market_data.get("result", "").lower()
+                    if result_val == "yes":
+                        outcome_str = "yes"
+                    elif result_val == "no":
+                        outcome_str = "no"
+                    else:
+                        outcome_str = "void"
             except Exception as exc:
                 log.warning(
                     "kalshi_resolution_skipped",
@@ -225,7 +234,98 @@ class OutcomeResolver:
                     error=str(exc),
                 )
                 result.errors.append(f"kalshi market {ticker}: {exc}")
+
+            # Close-date fallback: when the API is unreachable or returns a
+            # non-settled status, infer outcome from the last recorded price if
+            # the market's close_date has already passed.
+            #   price <= 0.05  ->  no  (YES share worth ~$0, market resolved NO)
+            #   price >= 0.95  ->  yes (YES share worth ~$1, market resolved YES)
+            #   else           ->  leave open (ambiguous, needs API confirmation)
+            if outcome_str is None:
+                close_date = self._get_market_close_date(market_id)
+                if close_date is not None and close_date <= now_utc:
+                    last_price = self._get_latest_price_for_platform_id(
+                        "kalshi", ticker
+                    )
+                    if last_price is not None:
+                        if last_price <= 0.05:
+                            outcome_str = "no"
+                        elif last_price >= 0.95:
+                            outcome_str = "yes"
+                        # else: ambiguous mid-range — leave open
+                        if outcome_str is not None:
+                            log.warning(
+                                "kalshi_close_date_fallback",
+                                market_id=market_id,
+                                ticker=ticker,
+                                last_price=last_price,
+                                inferred_outcome=outcome_str,
+                            )
+
+            if outcome_str is None:
                 continue
+
+            new = self._record_outcome(market_id, "kalshi", outcome_str)
+            if new:
+                result.markets_resolved += 1
+
+            settled = self._settle_trades(market_id, outcome_str)
+            result.trades_settled += settled
+            result.total_pnl_realized += self._sum_pnl(market_id)
+
+    def _get_market_close_date(self, market_id: int) -> datetime | None:
+        """Return close_date for a markets row as a UTC-aware datetime, or None."""
+        row = self._conn.execute(
+            "SELECT close_date FROM markets WHERE id = ?",
+            (market_id,),
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            cd = datetime.fromisoformat(row[0])
+            if cd.tzinfo is None:
+                cd = cd.replace(tzinfo=timezone.utc)
+            return cd
+        except ValueError:
+            return None
+
+    def _get_latest_price_for_platform_id(
+        self, platform: str, platform_id: str
+    ) -> float | None:
+        """Return the most recent current_price for a (platform, platform_id) pair."""
+        row = self._conn.execute(
+            """SELECT current_price FROM markets
+               WHERE platform = ? AND platform_id = ?
+               ORDER BY fetched_at DESC
+               LIMIT 1""",
+            (platform, platform_id),
+        ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def _settle_stuck_kalshi_overrides(self, result: ResolverResult) -> None:
+        """One-off migration: settle Kalshi trades whose outcomes are confirmed
+        but were never resolved because the production API is unreachable from
+        Railway. Idempotent — silently skips already-settled trades."""
+        for trade_id, outcome in self._KALSHI_STUCK_OVERRIDES.items():
+            row = self._conn.execute(
+                "SELECT market_id FROM trades WHERE id = ? AND status = 'open'",
+                (trade_id,),
+            ).fetchone()
+            if row is None:
+                continue  # Already settled or trade doesn't exist
+            market_id: int = row[0]
+            log.warning(
+                "kalshi_stuck_trade_override",
+                trade_id=trade_id,
+                market_id=market_id,
+                outcome=outcome,
+            )
+            new = self._record_outcome(market_id, "kalshi", outcome)
+            if new:
+                result.markets_resolved += 1
+            settled = self._settle_trades(market_id, outcome)
+            result.trades_settled += settled
+            result.total_pnl_realized += self._sum_pnl(market_id)
 
     def _record_outcome(
         self, market_id: int, platform: str, outcome: str

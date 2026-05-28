@@ -341,6 +341,218 @@ class TestPolymarketResolutionFetch:
         assert trade is not None
         assert trade[0] == "open"
 
+
+class TestKalshiCloseDateFallback:
+    """Tests for the close_date fallback in _fetch_kalshi_resolutions."""
+
+    def _seed_kalshi_market(
+        self,
+        conn: sqlite3.Connection,
+        ticker: str,
+        current_price: float,
+        close_date: datetime,
+    ) -> int:
+        cur = conn.execute(
+            """INSERT INTO markets
+               (platform, platform_id, question, current_price, volume,
+                close_date, fetched_at)
+               VALUES ('kalshi', ?, 'Test Kalshi market', ?, 10000, ?, ?)""",
+            (ticker, current_price, close_date.isoformat(), close_date.isoformat()),
+        )
+        conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    @pytest.mark.asyncio
+    async def test_price_at_floor_resolves_no(self, db, settings):
+        """price <= 0.05 with past close_date -> inferred outcome 'no'."""
+        past = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        mid = self._seed_kalshi_market(db, "PGA-ABERG-26", 0.03, past)
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "kalshi", "buy_no", 10.0, 0.97, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+        client = AsyncMock()
+        client.get.side_effect = Exception("[Errno -2] Name or service not known")
+
+        await resolver._fetch_kalshi_resolutions(client, [(mid, "PGA-ABERG-26")], result)
+
+        assert result.markets_resolved == 1
+        assert result.trades_settled == 1
+        outcome = db.execute(
+            "SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert outcome[0] == "no"
+        trade = db.execute(
+            "SELECT status FROM trades WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert trade[0] == "settled"
+
+    @pytest.mark.asyncio
+    async def test_price_at_ceiling_resolves_yes(self, db, settings):
+        """price >= 0.95 with past close_date -> inferred outcome 'yes'."""
+        past = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        mid = self._seed_kalshi_market(db, "SOME-YES-26", 0.97, past)
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.03, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+        client = AsyncMock()
+        client.get.side_effect = Exception("[Errno -2] Name or service not known")
+
+        await resolver._fetch_kalshi_resolutions(client, [(mid, "SOME-YES-26")], result)
+
+        assert result.markets_resolved == 1
+        assert result.trades_settled == 1
+        outcome = db.execute(
+            "SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert outcome[0] == "yes"
+
+    @pytest.mark.asyncio
+    async def test_mid_range_price_stays_open(self, db, settings):
+        """price in 0.06..0.94 range -> ambiguous, trade left open."""
+        past = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        mid = self._seed_kalshi_market(db, "AMBIG-26", 0.50, past)
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.50, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+        client = AsyncMock()
+        client.get.side_effect = Exception("[Errno -2] Name or service not known")
+
+        await resolver._fetch_kalshi_resolutions(client, [(mid, "AMBIG-26")], result)
+
+        assert result.markets_resolved == 0
+        assert result.trades_settled == 0
+        trade = db.execute(
+            "SELECT status FROM trades WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert trade[0] == "open"
+
+    @pytest.mark.asyncio
+    async def test_future_close_date_no_fallback(self, db, settings):
+        """price <= 0.05 but close_date is in the future -> no fallback fires."""
+        future = datetime(2027, 1, 1, tzinfo=timezone.utc)
+        mid = self._seed_kalshi_market(db, "FUTURE-26", 0.02, future)
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "kalshi", "buy_no", 10.0, 0.98, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+        client = AsyncMock()
+        client.get.side_effect = Exception("[Errno -2] Name or service not known")
+
+        await resolver._fetch_kalshi_resolutions(client, [(mid, "FUTURE-26")], result)
+
+        assert result.markets_resolved == 0
+        assert result.trades_settled == 0
+        trade = db.execute(
+            "SELECT status FROM trades WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert trade[0] == "open"
+
+    @pytest.mark.asyncio
+    async def test_api_settled_skips_fallback(self, db, settings):
+        """When API returns status=settled, the API outcome wins; no fallback."""
+        past = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        # Seed with mid-range price so fallback would leave open if it fired
+        mid = self._seed_kalshi_market(db, "SETTLED-API-26", 0.50, past)
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.50, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+        mock_resp = Mock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {"market": {"status": "settled", "result": "yes"}}
+        client = AsyncMock()
+        client.get.return_value = mock_resp
+
+        await resolver._fetch_kalshi_resolutions(client, [(mid, "SETTLED-API-26")], result)
+
+        assert result.markets_resolved == 1
+        assert result.trades_settled == 1
+        outcome = db.execute(
+            "SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert outcome[0] == "yes"
+
+
+class TestSettleStuckKalshiOverrides:
+    """Tests for the one-off migration function."""
+
+    def test_settles_open_trade_with_known_outcome(self, db, settings):
+        mid = _seed_market(db, "kalshi", "STUCK-TEST")
+        ep_id = _seed_ensemble(db, mid)
+        trade_id = _seed_trade(db, mid, ep_id, "kalshi", "buy_no", 10.0, 0.97, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        resolver._KALSHI_STUCK_OVERRIDES = {trade_id: "no"}  # type: ignore[assignment]
+
+        result = ResolverResult()
+        resolver._settle_stuck_kalshi_overrides(result)
+
+        assert result.trades_settled == 1
+        assert result.markets_resolved == 1
+        row = db.execute(
+            "SELECT status, pnl FROM trades WHERE id = ?", (trade_id,)
+        ).fetchone()
+        assert row[0] == "settled"
+        # buy_no + no outcome -> profit
+        assert row[1] > 0
+
+    def test_idempotent_on_already_settled_trade(self, db, settings):
+        mid = _seed_market(db, "kalshi", "STUCK-IDEM")
+        ep_id = _seed_ensemble(db, mid)
+        trade_id = _seed_trade(db, mid, ep_id, "kalshi", "buy_no", 10.0, 0.97, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        resolver._KALSHI_STUCK_OVERRIDES = {trade_id: "no"}  # type: ignore[assignment]
+
+        r1 = ResolverResult()
+        resolver._settle_stuck_kalshi_overrides(r1)
+        assert r1.trades_settled == 1
+
+        r2 = ResolverResult()
+        resolver._settle_stuck_kalshi_overrides(r2)
+        assert r2.trades_settled == 0
+        assert r2.markets_resolved == 0
+
+    def test_duplicate_market_positions_settled_together(self, db, settings):
+        """Trades sharing the same market_id are all settled on first hit."""
+        mid = _seed_market(db, "kalshi", "HORMUZ-DUP")
+        ep_id = _seed_ensemble(db, mid)
+        t1 = _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.50, 0.0)
+        t2 = _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.50, 0.0)
+        t3 = _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.50, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        # Simulate trades 24/25/27 — same market, three separate trade IDs
+        resolver._KALSHI_STUCK_OVERRIDES = {  # type: ignore[assignment]
+            t1: "no",
+            t2: "no",
+            t3: "no",
+        }
+
+        result = ResolverResult()
+        resolver._settle_stuck_kalshi_overrides(result)
+
+        # All 3 trades settled, but market only counted once
+        assert result.trades_settled == 3
+        assert result.markets_resolved == 1
+        rows = db.execute(
+            "SELECT status FROM trades WHERE market_id = ?", (mid,)
+        ).fetchall()
+        assert all(r[0] == "settled" for r in rows)
+
+
+@pytest.mark.asyncio
+class TestPolymarketClosedWithoutWinner:
+    """Regression: clob closed but no token winner — trade must stay open."""
+
     async def test_does_not_settle_when_clob_closed_without_winner(self, db, settings):
         mid = _seed_market(db, "polymarket", "pm-clob-nowinner")
         ep_id = _seed_ensemble(db, mid)
