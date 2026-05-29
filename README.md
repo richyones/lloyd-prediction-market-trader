@@ -1,6 +1,6 @@
 # Lloyd
 
-A prediction market trading bot that connects to Polymarket and Kalshi, pulls live market data, stores it in SQLite, and runs a scanner that filters and ranks markets by exploitability. This is **Stage 1** — no LLM predictions, no trading, no risk management yet.
+A prediction market trading bot that connects to Polymarket and Kalshi, runs an LLM ensemble for probability estimates, paper-trades with Kelly sizing, and tracks calibration via postmortem analysis. Deployed on **Railway** with external health monitoring via **GitHub Actions**.
 
 ## Quick start
 
@@ -10,15 +10,12 @@ uv sync
 
 # Configure
 cp .env.example .env
-# Edit .env if you have Kalshi API credentials (optional for Stage 1)
+# Edit .env — Kalshi credentials optional for read-only scanning; LLM keys required for predictions
 
 # Run a single scan
 uv run python -m lloyd scan
 
-# Or run just the scanner directly
-uv run python -m lloyd.scanner
-
-# Start the scheduler (scans every 30 minutes)
+# Start the full scheduler (scan, prediction, resolver, dashboard HTTP server)
 uv run python -m lloyd run
 ```
 
@@ -42,6 +39,33 @@ All environment variables are prefixed with `LLOYD_`.
 | `LLOYD_SCAN_INTERVAL_MINUTES` | `30` | Scheduler interval |
 | `LLOYD_DATABASE_PATH` | `./lloyd.db` | SQLite database file path |
 | `LLOYD_LOG_LEVEL` | `INFO` | Logging level (`DEBUG` for console output) |
+| `LLOYD_HEALTH_CHECK_PORT` | `8080` (local); **Railway `PORT`** when unset on Railway | HTTP port for `/health`, `/api/data`, dashboard |
+| `LLOYD_KALSHI_RESOLUTION_BASE_URL` | `https://demo-api.kalshi.co` | Kalshi host for settlement lookups (see handoff for Railway DNS note) |
+
+Full healthcheck / autotriage thresholds (used by `lloyd_healthcheck.py` and GitHub Actions) are documented in `.env.example` under **Health Check / Autotriage Defaults** (`PIPELINE_STUCK_HOURS`, `SCAN_DEAD_HOURS`, cost guards, etc.).
+
+## Deployment & monitoring
+
+**Railway:** `python -m lloyd run` binds the HTTP server to `PORT` automatically unless `LLOYD_HEALTH_CHECK_PORT` is set. Expose the service via Railway **Networking → Generate Domain**. Endpoints:
+
+| Route | Purpose |
+|-------|---------|
+| `/health` | `{"status":"ok"}` — liveness |
+| `/api/data` | Dashboard JSON (open trades, predictions, costs) |
+| `/` | Web dashboard (`lloyd/dashboard.html`) |
+
+Persist `LLOYD_DATABASE_PATH` and `LLOYD_LOG_PATH` on a volume (e.g. `/data/lloyd.db`, `/data/lloyd.log`). See `lloyd-handoff-stage5_3.md` for Railway env checklist.
+
+**GitHub Actions — Lloyd Health Check** (`.github/workflows/lloyd-healthcheck.yml`):
+
+- Cron every **6 hours** (`0 */6 * * *` UTC); **workflow_dispatch** for manual runs
+- Runs `python lloyd_healthcheck.py` (contract-based autotriage; see script for message types)
+- **Required repo secrets:** `LLOYD_BASE_URL` (domain only, no `/health` suffix), `SLACK_WEBHOOK_URL`
+- **Optional:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- Healthy run: all checks pass → Slack receives JSON `routine_digest` with `"status_summary": "pass"`
+- Escalations: critical findings, low-confidence findings, or high severity with `cost` / `functionality` risk tags → `escalation` payload (critical prefixed `[IMMEDIATE]` in Slack text)
+
+Operations detail: **Operations runbook** in `lloyd-handoff-stage5_3.md`.
 
 ## Architecture
 
@@ -78,11 +102,21 @@ uv run pytest tests/ -v
 LLOYD_INTEGRATION_TESTS=1 uv run pytest tests/test_integration.py -v
 ```
 
+## Related docs
+
+| File | Contents |
+|------|----------|
+| `lloyd-prd.md` | Full PRD, schemas, go-live criteria |
+| `lloyd-handoff-stage5_3.md` | Railway env, decisions log, **operations runbook** |
+| `lloyd-backlog-0317.md` | Deferred work with data-gated triggers |
+| `lloyd-log-reference.md` | Railway log events and cadence |
+
 ## Roadmap
 
 | Stage | Scope | Status |
 |-------|-------|--------|
-| 1 | Market scanner, data collection, exploitability ranking | **Current** |
-| 2 | LLM-powered research + probability prediction | Planned |
-| 3 | Risk management + order execution | Planned |
-| 4 | Postmortem analysis + performance tracking | Planned |
+| 1 | Market scanner, data collection, exploitability ranking | Done |
+| 2 | LLM research + probability prediction | Done |
+| 3 | Risk management + paper execution | Done |
+| 4 | Postmortem, calibration, go-live check | Done |
+| 5 | Railway deployment + paper trading evaluation | **In progress** |

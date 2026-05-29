@@ -2,9 +2,11 @@
 
 **Project codename:** Lloyd  
 **Author:** [Your Name]  
-**Date:** March 12, 2026  
-**Status:** Pre-development  
+**Date:** March 12, 2026 (monitoring section updated May 2026)  
+**Status:** Stages 1–4 implemented; Stage 5 — Railway paper trading & evaluation  
 **Primary tool:** Claude Code (greenfield build) → Cursor (iteration/debugging)
+
+**Operational docs (May 2026):** `README.md` (deployment summary), `lloyd-handoff-stage5_3.md` (Railway env + operations runbook), `lloyd-backlog-0317.md`, `lloyd-log-reference.md`.
 
 ---
 
@@ -487,8 +489,35 @@ PRICE_CHECK_INTERVAL_MINUTES=5
 # Infrastructure
 DATABASE_PATH=./lloyd.db
 LOG_LEVEL=INFO
-HEALTH_CHECK_PORT=8080
+# Lloyd app (LLOYD_ prefix in production):
+# LLOYD_HEALTH_CHECK_PORT=8080   # optional; on Railway, unset → bind to PORT
+# LLOYD_KALSHI_RESOLUTION_BASE_URL=https://demo-api.kalshi.co  # settlement lookups; prod DNS may fail on Railway
+
+# External healthcheck (GitHub Actions — NOT LLOYD_ prefixed):
+# LLOYD_BASE_URL=https://your-app.up.railway.app
+# SLACK_WEBHOOK_URL=
+# TELEGRAM_BOT_TOKEN= / TELEGRAM_CHAT_ID=  (optional)
+# PIPELINE_STUCK_HOURS=4, SCAN_DEAD_HOURS=6, RESOLVER_LOOKBACK_DAYS=3
+# Cost guards: MAX_COST_PER_CYCLE_USD=2, CYCLE_COST_HIGH_USD=3, CYCLE_COST_CRITICAL_USD=5,
+#   DAILY_COST_HIGH_USD=20, DAILY_COST_CRITICAL_USD=35, DAILY_COST_*_MULTIPLIER=1.25/1.5/2.0
 ```
+
+---
+
+## 5b. External monitoring (implemented May 2026)
+
+**GitHub Actions — Lloyd Health Check** (`.github/workflows/lloyd-healthcheck.yml`):
+
+- Schedule: every **6 hours** UTC; **workflow_dispatch** for manual runs
+- Script: `lloyd_healthcheck.py` at repo root
+- **Secrets:** `LLOYD_BASE_URL` (domain only), `SLACK_WEBHOOK_URL`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- Fetches deployed Lloyd `/health` and `/api/data`; runs resolver / pipeline / scan / cost checks
+- **Autotriage-first:** non-escalated issues → Slack JSON `autotriage_report`; escalations → `escalation` (critical prefixed `[IMMEDIATE]`); all clear → `routine_digest` with `status_summary: "pass"`
+- Escalation when: severity critical; confidence low; or severity high with cost or functionality risk tags
+
+**Kalshi resolution on Railway:** production `api.kalshi.com` may be DNS-unreachable; resolver defaults to demo resolution host and applies **close-date price fallback** (≤0.05 → no, ≥0.95 → yes). Temporary stuck-trade overrides for specific trade IDs — see `lloyd/postmortem/resolver.py`.
+
+Full runbook: `lloyd-handoff-stage5_3.md` → Operations runbook.
 
 ---
 
