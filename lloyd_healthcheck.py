@@ -41,6 +41,29 @@ API_DATA_RETRY_BACKOFF_SECONDS = float(os.environ.get("API_DATA_RETRY_BACKOFF_SE
 
 SEVERITY_ORDER = {"info": 0, "warning": 1, "high": 2, "critical": 3}
 
+_DEBUG_ENV_KEYS = (
+    "LLOYD_BASE_URL",
+    "SLACK_WEBHOOK_URL",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+)
+
+
+def _debug_print_env_lengths() -> None:
+    """Temporary: log env presence/lengths only (never secret values)."""
+    print("[debug] python env lengths (temporary)")
+    for key in _DEBUG_ENV_KEYS:
+        raw = os.environ.get(key)
+        if raw is None:
+            print(f"[debug] {key}: present=false raw_len=0 stripped_len=0")
+            continue
+        stripped = raw.strip()
+        print(
+            f"[debug] {key}: present=true raw_len={len(raw)} stripped_len={len(stripped)}"
+        )
+    related = sorted(k for k in os.environ if any(tag in k for tag in ("SLACK", "LLOYD", "TELEGRAM")))
+    print(f"[debug] related_env_keys={related}")
+
 
 def _parse_dt(s: str) -> datetime | None:
     if not s:
@@ -382,6 +405,7 @@ def build_escalation(run_id: str, finding: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> int:
+    _debug_print_env_lengths()
     run_id = _run_id()
     checks_run = ["/health", "/api/data", "resolver_overdue", "pipeline_stuck", "scan_dead", "cost_spike"]
     findings: list[dict[str, Any]] = []
