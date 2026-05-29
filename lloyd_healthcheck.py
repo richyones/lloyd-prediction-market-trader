@@ -18,7 +18,24 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-LLOYD_BASE_URL = os.environ["LLOYD_BASE_URL"].strip()
+def _normalize_base_url(url: str) -> str:
+    """Strip trailing slashes and accidental /health or /api/data path suffixes."""
+    normalized = url.strip().rstrip("/")
+    for suffix in ("/health", "/api/data"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)].rstrip("/")
+    return normalized
+
+
+_BASE_URL: str = ""
+
+
+def _base_url() -> str:
+    global _BASE_URL
+    if not _BASE_URL:
+        _BASE_URL = _normalize_base_url(os.environ["LLOYD_BASE_URL"])
+    return _BASE_URL
+
 
 ENVIRONMENT = os.environ.get("LLOYD_ENVIRONMENT", "production")
 
@@ -41,28 +58,8 @@ API_DATA_RETRY_BACKOFF_SECONDS = float(os.environ.get("API_DATA_RETRY_BACKOFF_SE
 
 SEVERITY_ORDER = {"info": 0, "warning": 1, "high": 2, "critical": 3}
 
-_DEBUG_ENV_KEYS = (
-    "LLOYD_BASE_URL",
-    "SLACK_WEBHOOK_URL",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
-)
-
-
-def _debug_print_env_lengths() -> None:
-    """Temporary: log env presence/lengths only (never secret values)."""
-    print("[debug] python env lengths (temporary)")
-    for key in _DEBUG_ENV_KEYS:
-        raw = os.environ.get(key)
-        if raw is None:
-            print(f"[debug] {key}: present=false raw_len=0 stripped_len=0")
-            continue
-        stripped = raw.strip()
-        print(
-            f"[debug] {key}: present=true raw_len={len(raw)} stripped_len={len(stripped)}"
-        )
-    related = sorted(k for k in os.environ if any(tag in k for tag in ("SLACK", "LLOYD", "TELEGRAM")))
-    print(f"[debug] related_env_keys={related}")
+HEALTH_FETCH_ATTEMPTS = int(os.environ.get("HEALTH_FETCH_ATTEMPTS", "3"))
+HEALTH_FETCH_TIMEOUT_SECONDS = float(os.environ.get("HEALTH_FETCH_TIMEOUT_SECONDS", "30"))
 
 
 def _parse_dt(s: str) -> datetime | None:
@@ -140,30 +137,51 @@ def _base_contract(run_id: str) -> dict[str, Any]:
     }
 
 
-def fetch_health(client: httpx.Client) -> dict[str, Any]:
-    resp = client.get(f"{LLOYD_BASE_URL}/health", timeout=15)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def fetch_api_data(client: httpx.Client) -> dict[str, Any]:
-    # Retry transient timeouts to reduce noisy critical alerts.
+def _fetch_json_with_retries(
+    client: httpx.Client,
+    path: str,
+    *,
+    attempts: int,
+    timeout_seconds: float,
+    label: str,
+) -> dict[str, Any]:
     last_exc: Exception | None = None
-    attempts = max(API_DATA_FETCH_ATTEMPTS, 1)
-    for attempt in range(1, attempts + 1):
+    url = f"{_base_url()}{path}"
+    tries = max(attempts, 1)
+    for attempt in range(1, tries + 1):
         try:
-            resp = client.get(f"{LLOYD_BASE_URL}/api/data", timeout=90)
+            resp = client.get(url, timeout=timeout_seconds)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
             last_exc = exc
-            if attempt == attempts:
+            if attempt == tries:
                 break
             sleep_s = API_DATA_RETRY_BACKOFF_SECONDS * attempt + random.uniform(0, 0.5)
-            print(f"[api_data] attempt {attempt}/{attempts} failed: {exc}; retrying in {sleep_s:.1f}s")
+            print(f"[{label}] attempt {attempt}/{tries} failed: {exc}; retrying in {sleep_s:.1f}s")
             time.sleep(sleep_s)
     assert last_exc is not None
     raise last_exc
+
+
+def fetch_health(client: httpx.Client) -> dict[str, Any]:
+    return _fetch_json_with_retries(
+        client,
+        "/health",
+        attempts=HEALTH_FETCH_ATTEMPTS,
+        timeout_seconds=HEALTH_FETCH_TIMEOUT_SECONDS,
+        label="health",
+    )
+
+
+def fetch_api_data(client: httpx.Client) -> dict[str, Any]:
+    return _fetch_json_with_retries(
+        client,
+        "/api/data",
+        attempts=API_DATA_FETCH_ATTEMPTS,
+        timeout_seconds=90,
+        label="api_data",
+    )
 
 
 def _make_finding(
@@ -405,7 +423,7 @@ def build_escalation(run_id: str, finding: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> int:
-    _debug_print_env_lengths()
+    print(f"[healthcheck] base_url={_base_url()}")
     run_id = _run_id()
     checks_run = ["/health", "/api/data", "resolver_overdue", "pipeline_stuck", "scan_dead", "cost_spike"]
     findings: list[dict[str, Any]] = []

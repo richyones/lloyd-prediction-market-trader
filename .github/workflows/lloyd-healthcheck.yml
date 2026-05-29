@@ -21,25 +21,6 @@ jobs:
       - name: Install dependencies
         run: pip install httpx
 
-      - name: Debug secret wiring and endpoint status (temporary)
-        env:
-          LLOYD_BASE_URL: ${{ secrets.LLOYD_BASE_URL }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          echo "LLOYD_BASE_URL_SET=$([ -n "$LLOYD_BASE_URL" ] && echo true || echo false)"
-          echo "SLACK_WEBHOOK_URL_SET=$([ -n "$SLACK_WEBHOOK_URL" ] && echo true || echo false)"
-          echo "TELEGRAM_BOT_TOKEN_SET=$([ -n "$TELEGRAM_BOT_TOKEN" ] && echo true || echo false)"
-          echo "TELEGRAM_CHAT_ID_SET=$([ -n "$TELEGRAM_CHAT_ID" ] && echo true || echo false)"
-          if [ -n "$LLOYD_BASE_URL" ]; then
-            echo "HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${LLOYD_BASE_URL%/}/health")"
-            echo "API_DATA_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${LLOYD_BASE_URL%/}/api/data")"
-          else
-            echo "HEALTH_STATUS=skipped_no_base_url"
-            echo "API_DATA_STATUS=skipped_no_base_url"
-          fi
-
       - name: Run health check
         env:
           LLOYD_BASE_URL: ${{ secrets.LLOYD_BASE_URL }}
@@ -61,13 +42,6 @@ jobs:
           DAILY_COST_CRITICAL_MULTIPLIER: "2.0"
           API_DATA_FETCH_ATTEMPTS: "2"
           API_DATA_RETRY_BACKOFF_SECONDS: "2.0"
-        run: |
-          echo "RUNSTEP_LLOYD_BASE_URL_SET=$([ -n "$LLOYD_BASE_URL" ] && echo true || echo false)"
-          echo "RUNSTEP_SLACK_WEBHOOK_URL_SET=$([ -n "$SLACK_WEBHOOK_URL" ] && echo true || echo false)"
-          echo "RUNSTEP_TELEGRAM_BOT_TOKEN_SET=$([ -n "$TELEGRAM_BOT_TOKEN" ] && echo true || echo false)"
-          echo "RUNSTEP_TELEGRAM_CHAT_ID_SET=$([ -n "$TELEGRAM_CHAT_ID" ] && echo true || echo false)"
-          echo "RUNSTEP_LLOYD_BASE_URL_LEN=${#LLOYD_BASE_URL}"
-          echo "RUNSTEP_SLACK_WEBHOOK_URL_LEN=${#SLACK_WEBHOOK_URL}"
-          echo "RUNSTEP_TELEGRAM_BOT_TOKEN_LEN=${#TELEGRAM_BOT_TOKEN}"
-          echo "RUNSTEP_TELEGRAM_CHAT_ID_LEN=${#TELEGRAM_CHAT_ID}"
-          python lloyd_healthcheck.py
+          HEALTH_FETCH_ATTEMPTS: "3"
+          HEALTH_FETCH_TIMEOUT_SECONDS: "30"
+        run: python lloyd_healthcheck.py

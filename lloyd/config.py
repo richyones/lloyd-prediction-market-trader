@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -95,8 +96,16 @@ class Settings(BaseSettings):
     price_check_interval_minutes: int = 5
     large_move_threshold: float = 0.10
 
-    # Infrastructure
+    # Infrastructure — HTTP server for /health, /api/data, dashboard.
+    # On Railway, public traffic uses PORT; bind to PORT unless LLOYD_HEALTH_CHECK_PORT is set.
     health_check_port: int = 8080
+
+    @model_validator(mode="after")
+    def _apply_railway_port(self) -> Settings:
+        railway_port = os.environ.get("PORT")
+        if railway_port and not os.environ.get("LLOYD_HEALTH_CHECK_PORT"):
+            self.health_check_port = int(railway_port)
+        return self
 
     # --- Stage 4 ---
 

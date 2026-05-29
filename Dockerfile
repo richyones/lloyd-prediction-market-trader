@@ -15,6 +15,7 @@ RUN uv sync --no-dev --no-install-project
 COPY lloyd/ ./lloyd/
 RUN uv sync --no-dev
 
+# Railway sets PORT at runtime; Lloyd binds to PORT when LLOYD_HEALTH_CHECK_PORT is unset.
 EXPOSE 8080
 
 CMD ["uv", "run", "lloyd", "run"]
