@@ -10,3 +10,4 @@ lloyd.db
 .DS_Store
 .specstory/
 .cursorindexingignore
+.healthcheck-state.json

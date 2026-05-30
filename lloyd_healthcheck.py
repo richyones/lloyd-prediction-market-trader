@@ -61,6 +61,8 @@ SEVERITY_ORDER = {"info": 0, "warning": 1, "high": 2, "critical": 3}
 HEALTH_FETCH_ATTEMPTS = int(os.environ.get("HEALTH_FETCH_ATTEMPTS", "3"))
 HEALTH_FETCH_TIMEOUT_SECONDS = float(os.environ.get("HEALTH_FETCH_TIMEOUT_SECONDS", "30"))
 
+STATE_PATH = os.environ.get("HEALTHCHECK_STATE_PATH", ".healthcheck-state.json")
+
 
 def _parse_dt(s: str) -> datetime | None:
     if not s:
@@ -87,13 +89,13 @@ def _incident_id(check_name: str, detail: str) -> str:
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
 
 
-def _send_slack(message: str) -> None:
+def _send_slack(body: dict[str, Any]) -> None:
     slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
     if not slack_webhook_url:
         print("[notify] slack webhook not configured")
         return
     try:
-        resp = httpx.post(slack_webhook_url, json={"text": message}, timeout=10)
+        resp = httpx.post(slack_webhook_url, json=body, timeout=10)
         resp.raise_for_status()
         print("[notify] slack delivered")
     except Exception as exc:
@@ -118,15 +120,253 @@ def _send_telegram(message: str) -> None:
         print(f"[notify] telegram delivery failed: {exc}")
 
 
+def _footer_line(payload: dict[str, Any]) -> str:
+    parts = [
+        payload.get("run_id", ""),
+        payload.get("environment", ""),
+        payload.get("timestamp_utc", ""),
+    ]
+    incident = payload.get("incident_id")
+    if incident:
+        parts.insert(0, f"incident `{incident}`")
+    return " · ".join(p for p in parts if p)
+
+
+def _bullet_lines(items: list[str]) -> str:
+    return "\n".join(f"• {item}" for item in items)
+
+
+def _format_slack_notification(payload: dict[str, Any], *, immediate: bool = False) -> dict[str, Any]:
+    """Human-readable Slack webhook body (text fallback + Block Kit blocks)."""
+    msg_type = payload.get("type")
+    if msg_type == "escalation":
+        return _slack_escalation(payload, immediate=immediate)
+    if msg_type == "autotriage_report":
+        return _slack_autotriage(payload)
+    if msg_type == "routine_digest":
+        return _slack_routine_digest(payload)
+    if msg_type == "recovery_report":
+        return _slack_recovery(payload)
+    return {"text": json.dumps(payload, ensure_ascii=True)}
+
+
+def _slack_escalation(payload: dict[str, Any], *, immediate: bool) -> dict[str, Any]:
+    severity = str(payload.get("severity", "unknown")).upper()
+    prefix = "🚨 IMMEDIATE — " if immediate else ""
+    title = f"{prefix}Lloyd Escalation — {severity}"
+    evidence = payload.get("evidence") or []
+    evidence_text = _bullet_lines(evidence) if evidence else "_(none)_"
+    risks = ", ".join(payload.get("risk_tags") or []) or "none"
+    fallback = f"{title.strip()}: {evidence[0]}" if evidence else title.strip()
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": title.strip(), "emoji": True}},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Severity*\n{payload.get('severity', '?')}"},
+                {"type": "mrkdwn", "text": f"*Confidence*\n{payload.get('confidence', '?')}"},
+                {"type": "mrkdwn", "text": f"*Risk tags*\n{risks}"},
+                {"type": "mrkdwn", "text": f"*Action required*\n{payload.get('action_required', '?')}"},
+            ],
+        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Evidence*\n{evidence_text}"}},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Recommended action*\n{payload.get('recommended_safest_action', '')}",
+            },
+        },
+    ]
+
+    alts = payload.get("alternative_actions") or []
+    if alts:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Alternatives*\n{_bullet_lines(alts)}"},
+            }
+        )
+
+    decision_by = payload.get("decision_needed_by")
+    if decision_by:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Decision needed by*\n{decision_by}"},
+            }
+        )
+
+    blocks.append({"type": "divider"})
+    blocks.append(
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": _footer_line(payload)}]}
+    )
+    return {"text": fallback, "blocks": blocks}
+
+
+def _slack_autotriage(payload: dict[str, Any]) -> dict[str, Any]:
+    severity = str(payload.get("severity", "unknown")).upper()
+    title = f"Lloyd Autotriage — {severity}"
+    why = payload.get("why", "")
+    risks = ", ".join(payload.get("risk_tags") or []) or "none"
+    fallback = f"{title}: {why}" if why else title
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Severity*\n{payload.get('severity', '?')}"},
+                {"type": "mrkdwn", "text": f"*Confidence*\n{payload.get('confidence', '?')}"},
+                {"type": "mrkdwn", "text": f"*Risk tags*\n{risks}"},
+                {"type": "mrkdwn", "text": f"*Action required*\n{payload.get('action_required', 'no')}"},
+            ],
+        },
+    ]
+    if why:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Finding*\n{why}"}})
+
+    done = payload.get("what_was_done") or []
+    if done:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*What was done*\n{_bullet_lines(done)}"},
+            }
+        )
+
+    blocks.append({"type": "divider"})
+    blocks.append(
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": _footer_line(payload)}]}
+    )
+    return {"text": fallback, "blocks": blocks}
+
+
+def _slack_recovery(payload: dict[str, Any]) -> dict[str, Any]:
+    check_name = payload.get("check_name", "unknown")
+    title = f"✅ Lloyd Recovered — {check_name}"
+    fallback = f"{title}: {payload.get('verification', '')}"
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Verification*\n{payload.get('verification', '')}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Previous severity*\n{payload.get('previous_severity', '?')}"},
+                {"type": "mrkdwn", "text": f"*Previous alert*\n{payload.get('previous_alert_type', '?')}"},
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Previous issue*\n{payload.get('previous_detail', '')}"},
+        },
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": _footer_line(payload)}],
+        },
+    ]
+    return {"text": fallback, "blocks": blocks}
+
+
+def _slack_routine_digest(payload: dict[str, Any]) -> dict[str, Any]:
+    status = str(payload.get("status_summary", "unknown")).upper()
+    emoji = "✅" if status == "PASS" else "⚠️"
+    title = f"{emoji} Lloyd Health Check — {status}"
+    deltas = payload.get("changes_since_last_run") or []
+    checks = ", ".join(payload.get("checks_run") or [])
+    delta_text = _bullet_lines(deltas) if deltas else "_(none)_"
+    fallback = f"{title}: {deltas[0]}" if deltas else title
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": title, "emoji": True}},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Summary*\n{delta_text}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Checks run*\n{checks}"},
+        },
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": _footer_line(payload)}],
+        },
+    ]
+    return {"text": fallback, "blocks": blocks}
+
+
+def _format_plain_notification(payload: dict[str, Any], *, immediate: bool = False) -> str:
+    """Plain-text notification for Telegram and log-friendly copy."""
+    msg_type = payload.get("type")
+    lines: list[str] = []
+
+    if msg_type == "escalation":
+        if immediate:
+            lines.append("IMMEDIATE — Lloyd Escalation")
+        else:
+            lines.append("Lloyd Escalation")
+        lines.extend(
+            [
+                f"Severity: {payload.get('severity', '?')} | Confidence: {payload.get('confidence', '?')}",
+                f"Risk: {', '.join(payload.get('risk_tags') or [])}",
+                "",
+                "Evidence:",
+                *([f"  - {e}" for e in payload.get("evidence") or []]),
+                "",
+                f"Recommended: {payload.get('recommended_safest_action', '')}",
+            ]
+        )
+        if payload.get("decision_needed_by"):
+            lines.append(f"Decision needed by: {payload['decision_needed_by']}")
+    elif msg_type == "autotriage_report":
+        lines.extend(
+            [
+                f"Lloyd Autotriage — {str(payload.get('severity', '?')).upper()}",
+                f"Finding: {payload.get('why', '')}",
+                f"Severity: {payload.get('severity', '?')} | Confidence: {payload.get('confidence', '?')}",
+                f"Action required: {payload.get('action_required', 'no')}",
+            ]
+        )
+    elif msg_type == "routine_digest":
+        lines.extend(
+            [
+                f"Lloyd Health Check — {str(payload.get('status_summary', '?')).upper()}",
+                *(payload.get("changes_since_last_run") or []),
+                f"Checks: {', '.join(payload.get('checks_run') or [])}",
+            ]
+        )
+    elif msg_type == "recovery_report":
+        lines.extend(
+            [
+                f"Lloyd Recovered — {payload.get('check_name', '?')}",
+                f"Verification: {payload.get('verification', '')}",
+                f"Previous ({payload.get('previous_severity', '?')}): {payload.get('previous_detail', '')}",
+                "Action required: no",
+            ]
+        )
+    else:
+        return json.dumps(payload, ensure_ascii=True)
+
+    lines.append("")
+    lines.append(_footer_line(payload))
+    return "\n".join(lines)
+
+
 def notify(payload: dict[str, Any], immediate: bool = False) -> None:
-    """Deliver contract payload as compact JSON text."""
-    # Prefix helps scanning notifier channels while preserving strict payload.
-    prefix = "[IMMEDIATE] " if immediate else ""
-    body = json.dumps(payload, ensure_ascii=True)
-    message = f"{prefix}{body}"
-    _send_slack(message)
-    _send_telegram(message)
-    print(message)
+    """Deliver contract payload: JSON to stdout, formatted text to Slack/Telegram."""
+    log_line = json.dumps(payload, ensure_ascii=True)
+    if immediate:
+        log_line = f"[IMMEDIATE] {log_line}"
+    print(log_line)
+    _send_slack(_format_slack_notification(payload, immediate=immediate))
+    _send_telegram(_format_plain_notification(payload, immediate=immediate))
 
 
 def _base_contract(run_id: str) -> dict[str, Any]:
@@ -422,15 +662,164 @@ def build_escalation(run_id: str, finding: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _default_state() -> dict[str, Any]:
+    return {"open_incidents": {}}
+
+
+def load_state() -> dict[str, Any]:
+    try:
+        with open(STATE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and isinstance(data.get("open_incidents"), dict):
+            return data
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"[state] could not load {STATE_PATH}: {exc}")
+    return _default_state()
+
+
+def save_state(state: dict[str, Any]) -> None:
+    try:
+        with open(STATE_PATH, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, ensure_ascii=True, indent=2)
+        print(f"[state] saved {STATE_PATH} ({len(state.get('open_incidents', {}))} open)")
+    except OSError as exc:
+        print(f"[state] could not save {STATE_PATH}: {exc}")
+
+
+def record_open_incident(
+    state: dict[str, Any],
+    finding: dict[str, Any],
+    alert_type: str,
+    run_id: str,
+) -> None:
+    key = finding["check_name"]
+    existing = state["open_incidents"].get(key, {})
+    state["open_incidents"][key] = {
+        "check_name": key,
+        "incident_id": finding["incident_id"],
+        "severity": finding["severity"],
+        "detail": finding["detail"],
+        "alert_type": alert_type,
+        "opened_at": existing.get("opened_at") or _now_iso(),
+        "last_seen_at": _now_iso(),
+        "last_run_id": run_id,
+    }
+
+
+def detect_recoveries(
+    state: dict[str, Any],
+    checks_evaluated: set[str],
+    failing_check_names: set[str],
+) -> list[dict[str, Any]]:
+    """Return open incidents for checks that were evaluated and now pass."""
+    recoveries: list[dict[str, Any]] = []
+    open_incidents = state.get("open_incidents", {})
+    for check_name in list(open_incidents):
+        if check_name in checks_evaluated and check_name not in failing_check_names:
+            recoveries.append(open_incidents.pop(check_name))
+    return recoveries
+
+
+def build_recovery_report(run_id: str, open_inc: dict[str, Any]) -> dict[str, Any]:
+    check_name = open_inc["check_name"]
+    payload = _base_contract(run_id)
+    payload.update(
+        {
+            "type": "recovery_report",
+            "incident_id": open_inc["incident_id"],
+            "check_name": check_name,
+            "previous_severity": open_inc["severity"],
+            "previous_detail": open_inc["detail"],
+            "previous_alert_type": open_inc["alert_type"],
+            "verification": f"{check_name} check passed on first clean run",
+            "result": "recovered",
+            "action_required": "no",
+        }
+    )
+    return payload
+
+
+def _notify_recoveries(
+    run_id: str,
+    state: dict[str, Any],
+    checks_evaluated: set[str],
+    failing_check_names: set[str],
+) -> list[dict[str, Any]]:
+    recoveries = detect_recoveries(state, checks_evaluated, failing_check_names)
+    for open_inc in recoveries:
+        notify(build_recovery_report(run_id, open_inc))
+        print(f"[recovery] {open_inc['check_name']} cleared")
+    return recoveries
+
+
+def _finalize_run(
+    run_id: str,
+    state: dict[str, Any],
+    findings: list[dict[str, Any]],
+    checks_run: list[str],
+    checks_evaluated: set[str],
+) -> int:
+    failing_names = {f["check_name"] for f in findings}
+    recoveries = _notify_recoveries(run_id, state, checks_evaluated, failing_names)
+
+    if not findings:
+        deltas = ["All checks healthy", "No action needed"]
+        if recoveries:
+            names = ", ".join(r["check_name"] for r in recoveries)
+            deltas = [f"{len(recoveries)} incident(s) recovered: {names}", "All checks healthy"]
+        notify(build_routine_digest(run_id, checks_run, "pass", deltas))
+        save_state(state)
+        return 0
+
+    exit_code = 0
+    for finding in findings:
+        if should_escalate(finding):
+            notify(build_escalation(run_id, finding), immediate=(finding["severity"] == "critical"))
+            record_open_incident(state, finding, "escalation", run_id)
+            exit_code = 1
+        else:
+            notify(build_autotriage_report(run_id, finding))
+            record_open_incident(state, finding, "autotriage", run_id)
+
+    if exit_code == 0:
+        deltas = [f"{len(findings)} non-escalated finding(s) triaged"]
+        if recoveries:
+            deltas.insert(0, f"{len(recoveries)} incident(s) recovered")
+        notify(build_routine_digest(run_id, checks_run, "degraded", deltas))
+
+    save_state(state)
+    return exit_code
+
+
+def _handle_early_failure(
+    run_id: str,
+    state: dict[str, Any],
+    finding: dict[str, Any],
+    checks_evaluated: set[str],
+) -> int:
+    """Record a fatal finding; recover other checks only if evaluated this run."""
+    failing = {finding["check_name"]}
+    _notify_recoveries(run_id, state, checks_evaluated, failing)
+    notify(build_escalation(run_id, finding), immediate=True)
+    record_open_incident(state, finding, "escalation", run_id)
+    save_state(state)
+    return 1
+
+
 def main() -> int:
     print(f"[healthcheck] base_url={_base_url()}")
     run_id = _run_id()
+    state = load_state()
     checks_run = ["/health", "/api/data", "resolver_overdue", "pipeline_stuck", "scan_dead", "cost_spike"]
     findings: list[dict[str, Any]] = []
+    checks_evaluated: set[str] = set()
 
     try:
         with httpx.Client() as client:
             # /health must be strict critical
+            checks_evaluated.add("health_endpoint")
             try:
                 health = fetch_health(client)
             except Exception as exc:
@@ -441,8 +830,7 @@ def main() -> int:
                     ["functionality"],
                     f"/health unreachable: {exc}",
                 )
-                notify(build_escalation(run_id, finding), immediate=True)
-                return 1
+                return _handle_early_failure(run_id, state, finding, checks_evaluated)
 
             if health.get("status") != "ok":
                 finding = _make_finding(
@@ -452,9 +840,9 @@ def main() -> int:
                     ["functionality"],
                     f"/health returned unexpected payload: {health}",
                 )
-                notify(build_escalation(run_id, finding), immediate=True)
-                return 1
+                return _handle_early_failure(run_id, state, finding, checks_evaluated)
 
+            checks_evaluated.add("api_data_endpoint")
             try:
                 data = fetch_api_data(client)
             except Exception as exc:
@@ -465,11 +853,17 @@ def main() -> int:
                     ["functionality"],
                     f"/api/data unavailable: {exc}",
                 )
-                notify(build_escalation(run_id, finding), immediate=True)
-                return 1
+                return _handle_early_failure(run_id, state, finding, checks_evaluated)
 
-            for check_fn in (check_resolver, check_pipeline_stuck, check_scan_dead, check_cost_spike):
+            check_specs = [
+                (check_resolver, "resolver_overdue"),
+                (check_pipeline_stuck, "pipeline_stuck"),
+                (check_scan_dead, "scan_dead"),
+                (check_cost_spike, "cost_spike"),
+            ]
+            for check_fn, check_name in check_specs:
                 finding = check_fn(data)
+                checks_evaluated.add(check_name)
                 if finding:
                     findings.append(finding)
                     print(f"[{finding['check_name']}] {finding['severity']} {finding['detail']}")
@@ -477,6 +871,7 @@ def main() -> int:
                     print(f"[{check_fn.__name__}] ok")
 
     except Exception as exc:
+        checks_evaluated.add("healthcheck_script")
         finding = _make_finding(
             "healthcheck_script",
             "critical",
@@ -484,39 +879,9 @@ def main() -> int:
             ["functionality"],
             f"Script crashed unexpectedly: {exc}",
         )
-        notify(build_escalation(run_id, finding), immediate=True)
-        return 1
+        return _handle_early_failure(run_id, state, finding, checks_evaluated)
 
-    if not findings:
-        notify(
-            build_routine_digest(
-                run_id,
-                checks_run,
-                "pass",
-                ["All checks healthy", "No action needed"],
-            )
-        )
-        return 0
-
-    exit_code = 0
-    for finding in findings:
-        if should_escalate(finding):
-            notify(build_escalation(run_id, finding), immediate=(finding["severity"] == "critical"))
-            exit_code = 1
-        else:
-            notify(build_autotriage_report(run_id, finding))
-
-    if exit_code == 0:
-        notify(
-            build_routine_digest(
-                run_id,
-                checks_run,
-                "degraded",
-                [f"{len(findings)} non-escalated finding(s) triaged"],
-            )
-        )
-
-    return exit_code
+    return _finalize_run(run_id, state, findings, checks_run, checks_evaluated)
 
 
 if __name__ == "__main__":

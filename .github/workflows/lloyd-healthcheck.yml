@@ -10,9 +10,19 @@ jobs:
   health-check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      LLOYD_ENVIRONMENT: production
+      HEALTHCHECK_STATE_PATH: .healthcheck-state.json
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Restore healthcheck incident state
+        uses: actions/cache@v4
+        with:
+          path: .healthcheck-state.json
+          key: lloyd-healthcheck-state-${{ env.LLOYD_ENVIRONMENT }}
+          restore-keys: lloyd-healthcheck-state-
 
       - uses: actions/setup-python@v5
         with:
@@ -28,6 +38,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LLOYD_ENVIRONMENT: "production"
+          HEALTHCHECK_STATE_PATH: .healthcheck-state.json
           MAX_COST_PER_CYCLE_USD: "2.0"
           PIPELINE_STUCK_HOURS: "4"
           SCAN_DEAD_HOURS: "6"
