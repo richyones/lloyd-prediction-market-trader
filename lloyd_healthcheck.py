@@ -41,6 +41,7 @@ ENVIRONMENT = os.environ.get("LLOYD_ENVIRONMENT", "production")
 
 MAX_COST_PER_CYCLE_USD = float(os.environ.get("MAX_COST_PER_CYCLE_USD", "2.0"))
 PIPELINE_STUCK_HOURS = int(os.environ.get("PIPELINE_STUCK_HOURS", "4"))
+PIPELINE_STUCK_GRACE_HOURS = float(os.environ.get("PIPELINE_STUCK_GRACE_HOURS", "1"))
 SCAN_DEAD_HOURS = int(os.environ.get("SCAN_DEAD_HOURS", "6"))
 RESOLVER_LOOKBACK_DAYS = int(os.environ.get("RESOLVER_LOOKBACK_DAYS", "3"))
 RESOLVER_HIGH_COUNT = int(os.environ.get("RESOLVER_HIGH_COUNT", "5"))
@@ -491,6 +492,32 @@ def _latest_prediction_age_hours(data: dict[str, Any]) -> float | None:
     return (datetime.now(timezone.utc) - latest_dt).total_seconds() / 3600
 
 
+def _prediction_interval_hours(data: dict[str, Any]) -> float | None:
+    scheduler = data.get("scheduler") or {}
+    raw = scheduler.get("prediction_interval_hours")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pipeline_stuck_threshold_hours(data: dict[str, Any]) -> float:
+    """Stuck only after a full scheduled interval plus grace — avoids false alarms."""
+    interval = _prediction_interval_hours(data)
+    if interval is not None and interval > 0:
+        return interval + PIPELINE_STUCK_GRACE_HOURS
+    return float(PIPELINE_STUCK_HOURS)
+
+
+def _scan_dead_threshold_hours(data: dict[str, Any]) -> float:
+    interval = _prediction_interval_hours(data)
+    if interval is not None and interval > 0:
+        return max(float(SCAN_DEAD_HOURS), interval * 2)
+    return float(SCAN_DEAD_HOURS)
+
+
 def check_pipeline_stuck(data: dict[str, Any]) -> dict[str, Any] | None:
     hours_since = _latest_prediction_age_hours(data)
     if hours_since is None:
@@ -501,15 +528,18 @@ def check_pipeline_stuck(data: dict[str, Any]) -> dict[str, Any] | None:
             ["functionality"],
             "Unable to determine latest prediction timestamp",
         )
-    if hours_since <= PIPELINE_STUCK_HOURS:
+    threshold = _pipeline_stuck_threshold_hours(data)
+    if hours_since <= threshold:
         return None
-    severity = "high" if hours_since <= PIPELINE_STUCK_HOURS * 2 else "critical"
+    severity = "high" if hours_since <= threshold * 2 else "critical"
+    interval = _prediction_interval_hours(data)
+    interval_note = f", interval {interval:.0f}h" if interval else ""
     return _make_finding(
         "pipeline_stuck",
         severity,
         "high",
         ["functionality"],
-        f"Last prediction {hours_since:.1f}h ago (threshold {PIPELINE_STUCK_HOURS}h)",
+        f"Last prediction {hours_since:.1f}h ago (threshold {threshold:.1f}h{interval_note})",
     )
 
 
@@ -517,15 +547,16 @@ def check_scan_dead(data: dict[str, Any]) -> dict[str, Any] | None:
     hours_since = _latest_prediction_age_hours(data)
     if hours_since is None:
         return None
-    if hours_since <= SCAN_DEAD_HOURS:
+    threshold = _scan_dead_threshold_hours(data)
+    if hours_since <= threshold:
         return None
-    severity = "high" if hours_since <= SCAN_DEAD_HOURS * 2 else "critical"
+    severity = "high" if hours_since <= threshold * 2 else "critical"
     return _make_finding(
         "scan_dead",
         severity,
         "high",
         ["functionality"],
-        f"No fresh prediction in {hours_since:.1f}h (threshold {SCAN_DEAD_HOURS}h)",
+        f"No fresh prediction in {hours_since:.1f}h (threshold {threshold:.1f}h)",
     )
 
 

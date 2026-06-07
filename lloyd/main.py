@@ -368,6 +368,10 @@ def _build_api_data() -> str:
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scheduler": {
+            "prediction_interval_hours": settings.prediction_interval_hours,
+            "scan_interval_minutes": settings.scan_interval_minutes,
+        },
         "portfolio": portfolio,
         "open_trades": open_trades,
         "recent_predictions": recent_predictions,
