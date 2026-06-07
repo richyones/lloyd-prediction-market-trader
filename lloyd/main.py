@@ -521,6 +521,7 @@ async def _matcher_job() -> None:
 
 async def _resolver_job() -> None:
     """Async resolver job — requires AsyncIOScheduler (used in Stage 3)."""
+    log.info("resolver_job_started")
     settings = get_settings()
     conn = get_connection(settings.database_path)
     try:
@@ -634,6 +635,7 @@ def _start_scheduler() -> None:
         await run_scan_cycle()
         await run_prediction_cycle()
         asyncio.create_task(_matcher_job())
+        asyncio.create_task(_resolver_job())
 
         # Keep alive until shutdown
         while not _shutdown_requested:
