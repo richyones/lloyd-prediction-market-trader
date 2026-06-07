@@ -455,6 +455,37 @@ class TestKalshiCloseDateFallback:
         assert trade[0] == "open"
 
     @pytest.mark.asyncio
+    async def test_api_live_price_beats_stale_db(self, db, settings):
+        """API last_price 0.02 settles even when DB still has 0.35 from pre-close scan."""
+        past = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        mid = self._seed_kalshi_market(db, "LIVE-02-26", 0.35, past)
+        ep_id = _seed_ensemble(db, mid)
+        _seed_trade(db, mid, ep_id, "kalshi", "buy_yes", 10.0, 0.30, 0.0)
+
+        resolver = OutcomeResolver(db, settings)
+        result = ResolverResult()
+        mock_resp = Mock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "market": {
+                "status": "closed",
+                "last_price_dollars": "0.02",
+                "close_time": past.isoformat(),
+            }
+        }
+        client = AsyncMock()
+        client.get.return_value = mock_resp
+
+        await resolver._fetch_kalshi_resolutions(client, [(mid, "LIVE-02-26")], result)
+
+        assert result.markets_resolved == 1
+        assert result.trades_settled == 1
+        outcome = db.execute(
+            "SELECT outcome FROM outcomes WHERE market_id = ?", (mid,)
+        ).fetchone()
+        assert outcome[0] == "no"
+
+    @pytest.mark.asyncio
     async def test_api_settled_skips_fallback(self, db, settings):
         """When API returns status=settled, the API outcome wins; no fallback."""
         past = datetime(2026, 5, 1, tzinfo=timezone.utc)

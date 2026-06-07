@@ -741,6 +741,12 @@ def build_recovery_report(run_id: str, open_inc: dict[str, Any]) -> dict[str, An
     return payload
 
 
+def should_notify_escalation(state: dict[str, Any], finding: dict[str, Any]) -> bool:
+    """Skip repeat Slack escalations for the same ongoing check."""
+    existing = state.get("open_incidents", {}).get(finding["check_name"])
+    return not (existing and existing.get("alert_type") == "escalation")
+
+
 def _notify_recoveries(
     run_id: str,
     state: dict[str, Any],
@@ -776,7 +782,12 @@ def _finalize_run(
     exit_code = 0
     for finding in findings:
         if should_escalate(finding):
-            notify(build_escalation(run_id, finding), immediate=(finding["severity"] == "critical"))
+            if should_notify_escalation(state, finding):
+                notify(build_escalation(run_id, finding), immediate=(finding["severity"] == "critical"))
+            else:
+                print(
+                    f"[{finding['check_name']}] still failing; skipping duplicate escalation"
+                )
             record_open_incident(state, finding, "escalation", run_id)
             exit_code = 1
         else:
@@ -802,7 +813,10 @@ def _handle_early_failure(
     """Record a fatal finding; recover other checks only if evaluated this run."""
     failing = {finding["check_name"]}
     _notify_recoveries(run_id, state, checks_evaluated, failing)
-    notify(build_escalation(run_id, finding), immediate=True)
+    if should_notify_escalation(state, finding):
+        notify(build_escalation(run_id, finding), immediate=True)
+    else:
+        print(f"[{finding['check_name']}] still failing; skipping duplicate escalation")
     record_open_incident(state, finding, "escalation", run_id)
     save_state(state)
     return 1

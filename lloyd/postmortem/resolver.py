@@ -10,6 +10,11 @@ import httpx
 import structlog
 
 from lloyd.config import Settings
+from lloyd.postmortem.kalshi_resolution import (
+    fetch_kalshi_market_data,
+    load_kalshi_private_key,
+    resolve_kalshi_outcome,
+)
 
 log = structlog.get_logger()
 
@@ -35,6 +40,15 @@ class OutcomeResolver:
         24: "no",  # Hormuz 7-day avg never exceeded 60 before May 15
         25: "no",  # Same market as 24, duplicate position
         27: "no",  # Same market as 24, duplicate position
+        # Jun 2026 — obvious NO from live Kalshi price ~$0.02 post-close (logs Jun 6).
+        # Idempotent; remove once settled. Resolver API-price fallback handles new cases.
+        26: "no",
+        29: "no",
+        31: "no",
+        33: "no",
+        35: "no",
+        38: "no",
+        39: "no",
     }
 
     def __init__(self, conn: sqlite3.Connection, settings: Settings) -> None:
@@ -167,103 +181,65 @@ class OutcomeResolver:
         markets: list[tuple[int, str]],
         result: ResolverResult,
     ) -> None:
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric import padding
-        from cryptography.hazmat.primitives.serialization import load_pem_private_key
-        from pathlib import Path
-        import base64
+        private_key = load_kalshi_private_key(self._settings)
+        if private_key is None and self._settings.kalshi_api_key_id:
+            log.warning(
+                "kalshi_resolver_no_auth",
+                msg="Kalshi API key configured but RSA key not loaded; settlement may fail",
+            )
 
-        private_key = None
-        if self._settings.kalshi_rsa_key_path and self._settings.kalshi_api_key_id:
-            key_path = Path(self._settings.kalshi_rsa_key_path)
-            if key_path.exists():
-                private_key = load_pem_private_key(key_path.read_bytes(), password=None)
-
-        # Resolution URL is configurable (LLOYD_KALSHI_RESOLUTION_BASE_URL).
-        # Defaults to demo-api.kalshi.co. Switch to api.kalshi.com if/when
-        # Railway's DNS can reach the production Kalshi endpoint.
-        base_url = self._settings.kalshi_resolution_base_url
         now_utc = datetime.now(timezone.utc)
 
         for market_id, ticker in markets:
-            path = f"/trade-api/v2/markets/{ticker}"
-            timestamp_ms = int(time.time() * 1000)
+            market_data = await fetch_kalshi_market_data(
+                client, self._settings, ticker, private_key
+            )
+            close_date = self._get_market_close_date(market_id)
+            db_yes_price = self._get_latest_price_for_platform_id("kalshi", ticker)
 
-            headers: dict[str, str] = {}
-            if private_key is not None:
-                message = f"{timestamp_ms}GET{path}".encode()
-                signature = private_key.sign(  # type: ignore[union-attr]
-                    message,
-                    padding.PSS(
-                        mgf=padding.MGF1(hashes.SHA256()),
-                        salt_length=padding.PSS.MAX_LENGTH,
-                    ),
-                    hashes.SHA256(),
-                )
-                headers = {
-                    "KALSHI-ACCESS-KEY": self._settings.kalshi_api_key_id,
-                    "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
-                    "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
-                }
+            outcome_str, method, debug = resolve_kalshi_outcome(
+                market_data,
+                close_date=close_date,
+                db_yes_price=db_yes_price,
+                now_utc=now_utc,
+            )
 
-            outcome_str: str | None = None
-
-            try:
-                resp = await client.get(
-                    f"{base_url}/trade-api/v2/markets/{ticker}",
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                market_data = data.get("market", data)
-
-                status = market_data.get("status", "").lower()
-                if status == "settled":
-                    result_val = market_data.get("result", "").lower()
-                    if result_val == "yes":
-                        outcome_str = "yes"
-                    elif result_val == "no":
-                        outcome_str = "no"
-                    else:
-                        outcome_str = "void"
-            except Exception as exc:
+            if outcome_str is None:
                 log.warning(
-                    "kalshi_resolution_skipped",
+                    "kalshi_resolution_ambiguous",
                     market_id=market_id,
                     ticker=ticker,
-                    error=str(exc),
+                    close_date=close_date.isoformat() if close_date else None,
+                    **debug,
                 )
-                result.errors.append(f"kalshi market {ticker}: {exc}")
-
-            # Close-date fallback: when the API is unreachable or returns a
-            # non-settled status, infer outcome from the last recorded price if
-            # the market's close_date has already passed.
-            #   price <= 0.05  ->  no  (YES share worth ~$0, market resolved NO)
-            #   price >= 0.95  ->  yes (YES share worth ~$1, market resolved YES)
-            #   else           ->  leave open (ambiguous, needs API confirmation)
-            if outcome_str is None:
-                close_date = self._get_market_close_date(market_id)
-                if close_date is not None and close_date <= now_utc:
-                    last_price = self._get_latest_price_for_platform_id(
-                        "kalshi", ticker
-                    )
-                    if last_price is not None:
-                        if last_price <= 0.05:
-                            outcome_str = "no"
-                        elif last_price >= 0.95:
-                            outcome_str = "yes"
-                        # else: ambiguous mid-range — leave open
-                        if outcome_str is not None:
-                            log.warning(
-                                "kalshi_close_date_fallback",
-                                market_id=market_id,
-                                ticker=ticker,
-                                last_price=last_price,
-                                inferred_outcome=outcome_str,
-                            )
-
-            if outcome_str is None:
                 continue
+
+            if method == "api_settled":
+                log.info(
+                    "kalshi_api_resolved",
+                    market_id=market_id,
+                    ticker=ticker,
+                    outcome=outcome_str,
+                    api_status=debug.get("api_status"),
+                )
+            elif method == "api_price_fallback":
+                log.warning(
+                    "kalshi_close_date_fallback",
+                    market_id=market_id,
+                    ticker=ticker,
+                    outcome=outcome_str,
+                    price_source="api",
+                    yes_price=debug.get("api_yes_price"),
+                )
+            elif method == "db_price_fallback":
+                log.warning(
+                    "kalshi_close_date_fallback",
+                    market_id=market_id,
+                    ticker=ticker,
+                    outcome=outcome_str,
+                    price_source="db",
+                    yes_price=debug.get("db_yes_price"),
+                )
 
             new = self._record_outcome(market_id, "kalshi", outcome_str)
             if new:
