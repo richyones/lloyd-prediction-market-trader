@@ -43,6 +43,81 @@ def _prediction(market_id: int, trade_signal: str = "buy_yes") -> EnsemblePredic
     )
 
 
+def _open_trade(market_id: int, direction: str) -> Trade:
+    return Trade(
+        id=1,
+        market_id=market_id,
+        platform="polymarket",
+        platform_id=f"cond-{market_id}",
+        direction=direction,
+        quantity=100.0,
+        executed_price=0.50,
+    )
+
+
+def _mock_executor() -> MagicMock:
+    mock_executor = MagicMock()
+    mock_executor.get_portfolio_state.return_value = MagicMock()
+    mock_executor.execute = AsyncMock()
+    return mock_executor
+
+
+@pytest.mark.asyncio
+async def test_stage3_same_direction_blocked_silently():
+    conn = MagicMock()
+    settings = Settings(database_path=":memory:", live_trading_enabled=False)
+    predictions = [_prediction(market_id=1, trade_signal="buy_no")]
+    mock_executor = _mock_executor()
+    mock_log = MagicMock()
+
+    with (
+        patch("lloyd.main.get_open_paper_trades", return_value=[_open_trade(1, "buy_no")]),
+        patch("lloyd.execution.paper.PaperExecutor", return_value=mock_executor),
+        patch("lloyd.risk.sizer.RiskSizer", return_value=MagicMock()),
+        patch("lloyd.main.log", mock_log),
+    ):
+        await _run_stage3(conn, settings, predictions, MagicMock(), MagicMock())
+
+    mock_executor.execute.assert_not_called()
+    contrary_warnings = [
+        call
+        for call in mock_log.warning.call_args_list
+        if call.args and call.args[0] == "contrary_position_blocked"
+    ]
+    assert contrary_warnings == []
+    mock_log.info.assert_any_call(
+        "trade_blocked",
+        market_id=1,
+        reason="existing_open_position",
+    )
+
+
+@pytest.mark.asyncio
+async def test_stage3_contrary_direction_blocked_loudly():
+    conn = MagicMock()
+    settings = Settings(database_path=":memory:", live_trading_enabled=False)
+    predictions = [_prediction(market_id=1, trade_signal="buy_yes")]
+    mock_executor = _mock_executor()
+    mock_log = MagicMock()
+
+    with (
+        patch("lloyd.main.get_open_paper_trades", return_value=[_open_trade(1, "buy_no")]),
+        patch("lloyd.execution.paper.PaperExecutor", return_value=mock_executor),
+        patch("lloyd.risk.sizer.RiskSizer", return_value=MagicMock()),
+        patch("lloyd.main.log", mock_log),
+    ):
+        await _run_stage3(conn, settings, predictions, MagicMock(), MagicMock())
+
+    mock_executor.execute.assert_not_called()
+    mock_log.warning.assert_called_once_with(
+        "contrary_position_blocked",
+        market_id=1,
+        existing_direction="buy_no",
+        new_signal="buy_yes",
+        edge=0.08,
+    )
+
+
 @pytest.mark.asyncio
 async def test_stage3_skips_markets_with_existing_open_position():
     conn = MagicMock()

@@ -177,7 +177,9 @@ async def _run_stage3(
         conn, settings, polymarket_client=poly_client, kalshi_client=kalshi_client,
     )
 
-    open_market_ids = {t.market_id for t in get_open_paper_trades(conn)}
+    open_positions: dict[int, str] = {
+        t.market_id: t.direction for t in get_open_paper_trades(conn)
+    }
 
     trades_placed = 0
     trades_blocked = 0
@@ -186,12 +188,22 @@ async def _run_stage3(
         if prediction.trade_signal == "no_trade":
             continue
 
-        if prediction.market_id in open_market_ids:
-            log.info(
-                "trade_blocked",
-                market_id=prediction.market_id,
-                reason="existing_open_position",
-            )
+        if prediction.market_id in open_positions:
+            existing_direction = open_positions[prediction.market_id]
+            if existing_direction != prediction.trade_signal:
+                log.warning(
+                    "contrary_position_blocked",
+                    market_id=prediction.market_id,
+                    existing_direction=existing_direction,
+                    new_signal=prediction.trade_signal,
+                    edge=round(prediction.edge, 4),
+                )
+            else:
+                log.info(
+                    "trade_blocked",
+                    market_id=prediction.market_id,
+                    reason="existing_open_position",
+                )
             trades_blocked += 1
             continue
 
