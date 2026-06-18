@@ -2,16 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import warnings
 from abc import ABC, abstractmethod
 
 import structlog
 
-warnings.filterwarnings(
-    "ignore",
-    message=".*google.generativeai.*",
-    category=FutureWarning,
-)
 from pydantic import BaseModel, Field
 
 from lloyd.common.models import Market, NewsBundle
@@ -127,43 +121,45 @@ class Predictor(ABC):
         return data
 
 
-# GeminiPredictor disabled — google-generativeai package deprecated.
-# Migration to google.genai SDK required before re-enabling.
-# See backlog item: Gemini SDK migration.
-#
-# class GeminiPredictor(Predictor):
-#     def __init__(self) -> None:
-#         super().__init__(GEMINI_LIMITER)
-#         settings = get_settings()
-#         self._model_id = settings.gemini_model
-#
-#     async def _call_api(
-#         self, system_prompt: str, user_prompt: str,
-#     ) -> tuple[str, int, int]:
-#         import google.generativeai as genai
-#
-#         settings = get_settings()
-#         genai.configure(api_key=settings.google_ai_api_key)
-#         model = genai.GenerativeModel(
-#             self._model_id,
-#             system_instruction=system_prompt,
-#             generation_config=genai.GenerationConfig(
-#                 response_mime_type="application/json",
-#             ),
-#         )
-#         response = await model.generate_content_async(user_prompt)
-#         input_tok = 0
-#         output_tok = 0
-#         if response.usage_metadata:
-#             input_tok = response.usage_metadata.prompt_token_count or 0
-#             output_tok = response.usage_metadata.candidates_token_count or 0
-#         return response.text, input_tok, output_tok
-#
-#     def _model_name(self) -> str:
-#         return self._model_id
-#
-#     def _calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
-#         return 0.0
+class GeminiPredictor(Predictor):
+    def __init__(self) -> None:
+        super().__init__(GEMINI_LIMITER)
+        settings = get_settings()
+        self._model_id = settings.gemini_model
+
+    async def _call_api(
+        self, system_prompt: str, user_prompt: str,
+    ) -> tuple[str, int, int]:
+        from google import genai
+        from google.genai import types
+
+        settings = get_settings()
+        client = genai.Client(api_key=settings.google_ai_api_key)
+        response = await client.aio.models.generate_content(
+            model=self._model_id,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+            ),
+        )
+        text = response.text or ""
+        input_tok = 0
+        output_tok = 0
+        if response.usage_metadata:
+            input_tok = response.usage_metadata.prompt_token_count or 0
+            output_tok = response.usage_metadata.candidates_token_count or 0
+        return text, input_tok, output_tok
+
+    def _model_name(self) -> str:
+        return self._model_id
+
+    def _calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        settings = get_settings()
+        return (
+            (input_tokens / 1000) * settings.gemini_input_cost_per_1k
+            + (output_tokens / 1000) * settings.gemini_output_cost_per_1k
+        )
 
 
 class GPT5Predictor(Predictor):

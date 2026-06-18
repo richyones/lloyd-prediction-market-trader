@@ -114,4 +114,4 @@ class TestFormatNewsContext:
 
 class TestPromptVersion:
     def test_version_string(self):
-        assert PROMPT_VERSION == "v1.0"
+        assert PROMPT_VERSION == "v1.2"

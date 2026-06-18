@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     google_ai_api_key: str = ""
 
     # LLM model identifiers (config-driven so a broken id is a config fix)
-    gemini_model: str = "gemini-2.5-pro"
+    gemini_model: str = "gemini-2.5-flash"
     gpt5_model: str = "gpt-5"
     gpt5_fallback_model: str = "gpt-4o"
     claude_model: str = "claude-sonnet-4-20250514"
@@ -63,11 +63,20 @@ class Settings(BaseSettings):
     claude_input_cost_per_1k: float = 0.003
     claude_output_cost_per_1k: float = 0.015
 
+    # Gemini cost tracking (Gemini 2.5 Flash pricing)
+    gemini_input_cost_per_1k: float = 0.0003   # $0.30 per 1M input tokens
+    gemini_output_cost_per_1k: float = 0.0025  # $2.50 per 1M output tokens
+
     # Prediction thresholds
     min_edge_threshold: float = 0.03
     tier1_escalation_threshold: float = 0.05
     # Ensemble weight in final blend: final = (1-alpha)*market_price + alpha*ensemble
     market_conditioned_alpha: float = 0.3
+    # Direction-aware ensemble blending.
+    # buy_yes_alpha is intentionally lower than market_conditioned_alpha to compensate
+    # for the model's systematic overestimation of YES probability.
+    # market_conditioned_alpha continues to apply to buy_no and no_trade.
+    buy_yes_alpha: float = 0.15
 
     # Research
     rss_feeds: list[str] = []

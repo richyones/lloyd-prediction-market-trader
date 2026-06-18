@@ -11,7 +11,7 @@ from lloyd.config import Settings
 from lloyd.db import get_market_id, insert_ensemble_prediction, insert_predictions
 from lloyd.prediction.llm import (
     ClaudeSonnetPredictor,
-    # GeminiPredictor,  # disabled: SDK migration pending
+    GeminiPredictor,
     GPT5Predictor,
     PredictionResult,
 )
@@ -42,7 +42,7 @@ class EnsemblePipeline:
         self._settings = settings
         self._cache = ResearchCache(conn)
         self._retriever = NewsRetriever()
-        # self._gemini = GeminiPredictor()  # disabled: SDK migration pending (google-generativeai → google.genai)
+        self._gemini = GeminiPredictor()
         self._gpt5 = GPT5Predictor()
         self._claude = ClaudeSonnetPredictor()
         self._last_run_cost: float = 0.0
@@ -147,8 +147,12 @@ class EnsemblePipeline:
     async def _run_tier1(
         self, market: Market, bundle: NewsBundle,
     ) -> list[PredictionResult | None]:
-        # Gemini disabled pending SDK migration — running GPT-5 only for Tier 1
-        return [await self._gpt5.predict(market, bundle)]
+        results = await asyncio.gather(
+            self._gpt5.predict(market, bundle),
+            self._gemini.predict(market, bundle),
+            return_exceptions=False,
+        )
+        return list(results)
 
     async def _run_tier2(
         self, market: Market, bundle: NewsBundle,
@@ -201,17 +205,20 @@ class EnsemblePipeline:
             else:
                 ensemble_prob = sum(probabilities) / len(probabilities)
 
-        alpha = self._settings.market_conditioned_alpha
         edge = ensemble_prob - market_price
-        final_prob = (1 - alpha) * market_price + alpha * ensemble_prob
-
         min_edge = self._settings.min_edge_threshold
+
         if edge > min_edge:
             signal = "buy_yes"
+            alpha = self._settings.buy_yes_alpha
         elif edge < -min_edge:
             signal = "buy_no"
+            alpha = self._settings.market_conditioned_alpha
         else:
             signal = "no_trade"
+            alpha = self._settings.market_conditioned_alpha
+
+        final_prob = (1 - alpha) * market_price + alpha * ensemble_prob
 
         return EnsemblePrediction(
             market_id=market_id,

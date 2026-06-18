@@ -14,7 +14,7 @@ dependencies = [
     "cryptography",
     "anthropic",
     "openai",
-    "google-generativeai",
+    "google-genai",
     "feedparser",
     "rich",
 ]
