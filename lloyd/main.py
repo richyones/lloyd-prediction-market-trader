@@ -177,11 +177,22 @@ async def _run_stage3(
         conn, settings, polymarket_client=poly_client, kalshi_client=kalshi_client,
     )
 
+    open_market_ids = {t.market_id for t in get_open_paper_trades(conn)}
+
     trades_placed = 0
     trades_blocked = 0
 
     for prediction in predictions:
         if prediction.trade_signal == "no_trade":
+            continue
+
+        if prediction.market_id in open_market_ids:
+            log.info(
+                "trade_blocked",
+                market_id=prediction.market_id,
+                reason="existing_open_position",
+            )
+            trades_blocked += 1
             continue
 
         market_info = get_market_info(conn, prediction.market_id)
