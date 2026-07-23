@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -82,7 +82,11 @@ class Settings(BaseSettings):
     buy_yes_alpha: float = 0.15
 
     # Research
-    rss_feeds: list[str] = []
+    # NoDecode: pydantic-settings otherwise tries to json.loads() the raw env
+    # string before _parse_rss_feeds below ever runs, since list[str] fields are
+    # treated as "complex" types. Without this, any non-JSON value in
+    # LLOYD_RSS_FEEDS crashes the app on startup. Found 2026-07-23 the hard way.
+    rss_feeds: Annotated[list[str], NoDecode] = []
     news_cache_ttl_hours: int = 2
 
     # --- Stage 3 ---
