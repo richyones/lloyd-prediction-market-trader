@@ -58,8 +58,11 @@ class Settings(BaseSettings):
     claude_model: str = "claude-sonnet-4-20250514"
 
     # LLM cost tracking (per 1K tokens, USD)
-    gpt5_input_cost_per_1k: float = 0.005
-    gpt5_output_cost_per_1k: float = 0.015
+    # Updated 2026-07-23: gpt5_model now points at gpt-5.6-luna ($1.00/$6.00 per 1M).
+    # Previous values (0.005/0.015) were a stale estimate that also never matched
+    # actual GPT-4o billing ($2.50/$10.00 per 1M) — revisit if gpt5_model changes again.
+    gpt5_input_cost_per_1k: float = 0.001
+    gpt5_output_cost_per_1k: float = 0.006
     claude_input_cost_per_1k: float = 0.003
     claude_output_cost_per_1k: float = 0.015
 
