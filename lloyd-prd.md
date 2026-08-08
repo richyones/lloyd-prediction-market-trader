@@ -2,11 +2,11 @@
 
 **Project codename:** Lloyd  
 **Author:** [Your Name]  
-**Date:** March 12, 2026 (monitoring section updated May 2026)  
+**Date:** March 12, 2026 (monitoring section updated May 2026; doc references fixed August 8, 2026)  
 **Status:** Stages 1–4 implemented; Stage 5 — Railway paper trading & evaluation  
 **Primary tool:** Claude Code (greenfield build) → Cursor (iteration/debugging)
 
-**Operational docs (May 2026):** `README.md` (deployment summary), `lloyd-handoff-stage5_3.md` (Railway env + operations runbook), `lloyd-backlog-0317.md`, `lloyd-log-reference.md`.
+**Operational docs (updated Aug 2026):** `README.md` (deployment summary), `lloyd-handoff.md` (Railway env + operations runbook + decisions log), `lloyd-backlog.md` (deferred work), `lloyd-monitoring-reference.md` (GitHub Actions health-check / autotriage system).
 
 ---
 
@@ -61,7 +61,7 @@ MarketScanner → ResearchEngine → PredictionModel → RiskSizer → TradeExec
 
 | Tier | Models | Use case | Monthly cost (est.) |
 |------|--------|----------|-------------------|
-| Tier 1 — Screening | Gemini 3.1 Pro (free tier) + GPT-5 | Bulk probability estimates on 100+ markets/day | $10–15 |
+| Tier 1 — Screening | GPT-4o + Gemini 2.5 Flash | Bulk probability estimates on 100+ markets/day | $10–15 |
 | Tier 2 — Deep analysis | Claude Sonnet 4.6 | Full RAG prediction on 15–30 high-edge markets/day | $15–25 |
 | Ensemble aggregation | None (pure math) | Trimmed mean weighted by per-model Brier scores | $0 |
 
@@ -435,7 +435,7 @@ CREATE TABLE model_scores (
 | Package manager | uv | Fast, modern, replaces pip/pip-tools |
 | HTTP client | httpx | Async support, better API than requests |
 | Database | SQLite (WAL mode) | Zero-config, ACID, sufficient for single-process |
-| LLM clients | anthropic, openai, google-generativeai | Official SDKs, structured output support |
+| LLM clients | anthropic, openai, google-genai | Official SDKs, structured output support |
 | News data | GDELT API, feedparser (RSS) | Free, comprehensive, no API key needed |
 | Reddit | asyncpraw | Free tier, 100 queries/min |
 | Polymarket | py-clob-client | Official SDK for CLOB trading |
@@ -517,7 +517,7 @@ LOG_LEVEL=INFO
 
 **Kalshi resolution on Railway:** production `api.kalshi.com` may be DNS-unreachable; resolver defaults to demo resolution host and applies **close-date price fallback** (≤0.05 → no, ≥0.95 → yes). Temporary stuck-trade overrides for specific trade IDs — see `lloyd/postmortem/resolver.py`.
 
-Full runbook: `lloyd-handoff-stage5_3.md` → Operations runbook.
+Full runbook: `lloyd-handoff.md` → Operations runbook.
 
 ---
 

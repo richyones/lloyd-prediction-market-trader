@@ -1,5 +1,7 @@
 # Lloyd
 
+**Last updated:** August 8, 2026
+
 A prediction market trading bot that connects to Polymarket and Kalshi, runs an LLM ensemble for probability estimates, paper-trades with Kelly sizing, and tracks calibration via postmortem analysis. Deployed on **Railway** with external health monitoring via **GitHub Actions**.
 
 ## Quick start
@@ -54,7 +56,7 @@ Full healthcheck / autotriage thresholds (used by `lloyd_healthcheck.py` and Git
 | `/api/data` | Dashboard JSON (open trades, predictions, costs) |
 | `/` | Web dashboard (`lloyd/dashboard.html`) |
 
-Persist `LLOYD_DATABASE_PATH` and `LLOYD_LOG_PATH` on a volume (e.g. `/data/lloyd.db`, `/data/lloyd.log`). See `lloyd-handoff-stage5_3.md` for Railway env checklist.
+Persist `LLOYD_DATABASE_PATH` and `LLOYD_LOG_PATH` on a volume (e.g. `/data/lloyd.db`, `/data/lloyd.log`). See `lloyd-handoff.md` for the Railway env checklist and operations decisions log.
 
 **GitHub Actions — Lloyd Health Check** (`.github/workflows/lloyd-healthcheck.yml`):
 
@@ -65,7 +67,7 @@ Persist `LLOYD_DATABASE_PATH` and `LLOYD_LOG_PATH` on a volume (e.g. `/data/lloy
 - Healthy run: all checks pass → Slack receives JSON `routine_digest` with `"status_summary": "pass"`
 - Escalations: critical findings, low-confidence findings, or high severity with `cost` / `functionality` risk tags → `escalation` payload (critical prefixed `[IMMEDIATE]` in Slack text)
 
-Operations detail: **Operations runbook** in `lloyd-handoff-stage5_3.md`.
+Full alert-format/escalation-logic detail: `lloyd-monitoring-reference.md`. Operations decisions log / Railway env checklist: `lloyd-handoff.md`.
 
 ## Architecture
 
@@ -107,9 +109,9 @@ LLOYD_INTEGRATION_TESTS=1 uv run pytest tests/test_integration.py -v
 | File | Contents |
 |------|----------|
 | `lloyd-prd.md` | Full PRD, schemas, go-live criteria |
-| `lloyd-handoff-stage5_3.md` | Railway env, decisions log, **operations runbook** |
-| `lloyd-backlog-0317.md` | Deferred work with data-gated triggers |
-| `lloyd-log-reference.md` | Railway log events and cadence |
+| `lloyd-handoff.md` | Railway env, decisions log, **operations runbook** |
+| `lloyd-backlog.md` | Deferred work with data-gated triggers |
+| `lloyd-monitoring-reference.md` | GitHub Actions health-check / autotriage system: checks, thresholds, alert format |
 
 ## Roadmap
 
