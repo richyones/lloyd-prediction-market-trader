@@ -55,7 +55,13 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     gpt5_model: str = "gpt-5"
     gpt5_fallback_model: str = "gpt-4o"
-    claude_model: str = "claude-sonnet-4-20250514"
+    # Updated 2026-08-08: claude-sonnet-4-20250514 was retired by Anthropic —
+    # every Tier 2 call had been 404'ing since ~2026-06-15, silently, for 53 days
+    # (see lloyd-backlog.md P11/P12). This default was never actually overridden
+    # by a LLOYD_CLAUDE_MODEL env var in Railway, so the dead literal here is what
+    # was really running the whole time. Confirmed claude-sonnet-5 is live and
+    # available via client.models.list() before swapping.
+    claude_model: str = "claude-sonnet-5"
 
     # LLM cost tracking (per 1K tokens, USD)
     # Updated 2026-07-23: gpt5_model now points at gpt-5.6-luna ($1.00/$6.00 per 1M).
@@ -63,8 +69,13 @@ class Settings(BaseSettings):
     # actual GPT-4o billing ($2.50/$10.00 per 1M) — revisit if gpt5_model changes again.
     gpt5_input_cost_per_1k: float = 0.001
     gpt5_output_cost_per_1k: float = 0.006
-    claude_input_cost_per_1k: float = 0.003
-    claude_output_cost_per_1k: float = 0.015
+    # Updated 2026-08-08: claude-sonnet-5 introductory pricing ($2/$10 per 1M)
+    # runs through 2026-08-31, then steps up to $3/$15 per 1M — that happens to
+    # match the old values below, but don't assume that's permanent; it's a
+    # coincidence of this specific price step, not a reason to stop checking.
+    # TODO: revisit after 2026-08-31 and bump back to 0.003/0.015.
+    claude_input_cost_per_1k: float = 0.002
+    claude_output_cost_per_1k: float = 0.010
 
     # Gemini cost tracking (Gemini 2.5 Flash pricing)
     gemini_input_cost_per_1k: float = 0.0003   # $0.30 per 1M input tokens

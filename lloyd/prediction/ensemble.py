@@ -91,7 +91,13 @@ class EnsemblePipeline:
 
             if self._should_escalate(tier1, market.current_price):
                 tier2_result = await self._run_tier2(market, bundle)
-                tier2_used = True
+                # Fixed 2026-08-08: this used to be unconditional `tier2_used = True`
+                # right after the call, regardless of whether it succeeded. That's how
+                # a dead Claude model ID (see lloyd-backlog.md P11) hid for 53 days —
+                # tier2_used showed True in every log/dashboard/model_scores row even
+                # though _run_tier2 was silently returning None on every call.
+                # tier2_used should reflect whether Tier 2 actually produced a result.
+                tier2_used = tier2_result is not None
 
             all_preds = [p for p in [*tier1, tier2_result] if p is not None]
 
