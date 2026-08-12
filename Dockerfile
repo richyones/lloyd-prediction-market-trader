@@ -13,6 +13,7 @@ RUN uv sync --no-dev --no-install-project
 
 # Now copy source and install the project
 COPY lloyd/ ./lloyd/
+COPY scripts/ ./scripts/
 RUN uv sync --no-dev
 
 # Railway sets PORT at runtime; Lloyd binds to PORT when LLOYD_HEALTH_CHECK_PORT is unset.

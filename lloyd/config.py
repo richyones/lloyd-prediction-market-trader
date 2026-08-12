@@ -24,9 +24,14 @@ class Settings(BaseSettings):
     kalshi_base_url: str = "https://demo-api.kalshi.co/trade-api/v2"
 
     # Separate URL for resolution checks (market status/result lookups).
-    # Defaults to demo host since prod (api.kalshi.com) is unreachable on Railway.
-    # Override via LLOYD_KALSHI_RESOLUTION_BASE_URL env var when prod DNS is available.
-    kalshi_resolution_base_url: str = "https://demo-api.kalshi.co"
+    # Must be the REAL production API — outcomes have to come from the actual
+    # world, not the demo/paper-trading environment. This previously defaulted
+    # to the demo host under the belief that prod was unreachable from Railway
+    # due to DNS. That was a misdiagnosis: "api.kalshi.com" is simply not a
+    # real Kalshi hostname (never resolves, anywhere). The real production
+    # host is external-api.kalshi.com, confirmed reachable. Fixed 2026-08-12 —
+    # see lloyd-backlog.md.
+    kalshi_resolution_base_url: str = "https://external-api.kalshi.com"
 
     # Scanner thresholds
     min_volume: float = 10_000

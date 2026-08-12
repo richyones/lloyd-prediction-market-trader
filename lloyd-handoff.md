@@ -1,6 +1,6 @@
 # Lloyd Project — Conversation Handoff / Operations Runbook
 
-**Last updated:** August 8, 2026
+**Last updated:** August 8, 2026 (session 2)
 
 **Instructions:** Copy the PROJECT CONTEXT and CURRENT STATUS sections below into a new conversation when starting a fresh session on Lloyd. Update CURRENT STATUS and DECISIONS LOG each time you complete work. **Edit this file in place — do not save a dated copy.** This file replaces the `lloyd-handoff-stage5.md` / `5.2` / `5_3` / `5_4` series, which fragmented across four files and then went missing from the project folder entirely (never committed to git). This version was reconstructed from the last surviving copy (`stage5_4`, March 21, 2026) plus git history, `.specstory` session logs, and `lloyd-monitoring-reference.md` / `lloyd-backlog.md`, so the gap between March 21 and July 23 is summarized rather than logged turn-by-turn.
 
@@ -15,7 +15,7 @@ I'm building **Lloyd**, an AI-powered prediction market trading bot that trades 
 **Architecture decisions (locked in):**
 - Plain Python monolith — no multi-agent frameworks (CrewAI, LangGraph, etc.)
 - LLMs called as stateless functions, not agents
-- Tiered LLM ensemble: **GPT-5.6 Luna + Gemini 2.5 Flash for Tier 1 screening, Claude Sonnet for Tier 2 deep analysis** on high-edge markets (updated 2026-07-23 — see Decisions Log; originally GPT-4o only after Gemini was disabled)
+- Tiered LLM ensemble: **GPT-5.6 Luna + Gemini 2.5 Flash for Tier 1 screening, Claude Sonnet 5 for Tier 2 deep analysis** on high-edge markets (Tier 1 updated 2026-07-23; Tier 2 model fixed 2026-08-08 after being silently dead since June 15 — see Decisions Log)
 - SQLite with WAL mode (migrate to Postgres only if needed — see backlog I1)
 - Quarter-Kelly position sizing, max 5% per position, max 20% total exposure
 - Paper trading first, live trading only after meeting strict go-live criteria
@@ -48,7 +48,11 @@ I'm building **Lloyd**, an AI-powered prediction market trading bot that trades 
 
 **Stage:** 5 — Railway deployment & paper trading evaluation period
 
-**Last confirmed session:** July 23, 2026 (see Decisions Log for details). Root-caused a "no trades in a week" investigation to two stacked issues: Gemini failing on every call (depleted Google AI Studio billing, not a code bug) and `LLOYD_RSS_FEEDS` being completely unset in production (meaning zero news context on every prediction, unconditionally, since deployment). Both fixed same day, plus a GPT-5.6 Luna model swap and a `pydantic-settings` parsing bug fix.
+**Last confirmed session:** August 8, 2026, session 2 (see Decisions Log for details). A go-live check returned NO-GO; digging into the weakest criterion (calibration error) surfaced that **Tier 2 (Claude) had been completely non-functional since June 15** — a deprecated model snapshot (`claude-sonnet-4-20250514`) 404'd on every call for 53 days, invisible because a separate bookkeeping bug (`tier2_used` set unconditionally) made every dashboard/log/model_scores view report Tier 2 as working. Both root causes fixed in code and pushed: model swapped to `claude-sonnet-5`, `tier2_used` now reflects the real result. **Verified live same day** — `railway logs` showed 4 clean `tier2=True` completions with no errors in the first post-deploy cycle, and a direct `predictions` table query confirmed 3 real `claude-sonnet-5` rows landed (first genuine Tier 2 writes in 55 days).
+
+**Practical implication:** the two-tier architecture has effectively been Tier-1-only since June 15. All calibration/Brier/go-live data collected between June 15 and Aug 8 reflects that degraded state, not the intended design — don't treat the Aug 8 NO-GO verdict as meaningful evidence either way. Re-run go-live check only after several weeks of confirmed genuine Tier 2 activity.
+
+**Aug 12, 2026 session:** a `resolver_overdue` alert on two stuck Kalshi trades led to root-causing a resolver bug that's been live since May: `api.kalshi.com` (the assumed production host, believed unreachable due to "Railway DNS issues") isn't actually a real Kalshi hostname at all — it never resolves, anywhere. The real prod host is `https://external-api.kalshi.com`. Fixed in `config.py` and `kalshi_resolution.py` (resolution now checks prod before the demo API, instead of the reverse). Also fixed the Dockerfile, which never copied `scripts/` into the deployed image — `railway ssh` + any `scripts/*.py` tool has silently never worked. Full account and a flagged-but-not-fixed related issue (scanning/execution still runs against the demo API) in `lloyd-backlog.md` → Recent History → Aug 12 entry. Not yet redeployed/verified live — see that entry for what "verified" means so far (tests only).
 
 **Known documentation gap:** Nothing in this file, the backlog, or git commit messages fully accounts for what happened between March 21 and July 23 beyond what's reconstructed in the Decisions Log below from commit messages and `.specstory` session titles. If picking this project back up, it's worth skimming `.specstory/history/` for that window before assuming this doc is complete.
 
@@ -56,8 +60,9 @@ I'm building **Lloyd**, an AI-powered prediction market trading bot that trades 
 - Current portfolio state (cash, exposure, open positions, resolved trade count, go-live check verdict) — check `/api/data` or `uv run python -m lloyd.dashboard` via `railway ssh`, don't assume the March 2026 figures in old handoff versions still apply
 - Whether P10 (prompt anchoring possibly suppressing trade signals) has resolved itself now that RSS feeds and Tier 1 are both healthy — needs a few cycles of post-fix data
 - Whether the GitHub Actions runner persists `.healthcheck-state.json` between runs (affects alert dedup/recovery detection — see `lloyd-monitoring-reference.md`)
+- `lloyd.db` at 6.9GB and an unexplained 832MB backup file — see backlog I10, not urgent but unaddressed
 
-**Blocking issues:** None known, but see "not yet confirmed" above.
+**Blocking issues:** None known.
 
 ---
 
@@ -90,7 +95,7 @@ Entries through March 21, 2026 are from the original handoff series and are hist
 **April 2026 (reconstructed from git log + `.specstory` history):**
 - **Apr 7** — GitHub Actions health-check system deployed (`lloyd_healthcheck.py` + `.github/workflows/lloyd-healthcheck.yml`), pulled forward after a resolver silent-failure bug caused undetected losses over ~2 weeks. Same day: Polymarket CLOB fallback added to resolver, dashboard API settled-trade status filter fixed, `RESOLVER_LOOKBACK_DAYS` variable wired into alert text, resolver lookback bumped to 10 days for Kalshi settlement delay.
 - **Apr 12** — Paper cash balance bug fixed: now includes realized P&L from settled trades (previously cash balance didn't reflect closed positions correctly).
-- **Apr 30 – May 2** — Health check correctly flagged resolver silent failure on trades 13/14/16 (Kalshi markets stuck open past close date due to a DNS error against `api.kalshi.com`). Two fix attempts (URL prefix correction, then forcing the resolver to always hit the live API with the correct URL) landed Apr 30; root cause fixed May 2 by making `kalshi_resolution_base_url` configurable (defaults to `demo-api.kalshi.co`) to work around the Railway DNS issue. Kalshi market resolution failures isolated so one bad market doesn't block others (May 1).
+- **Apr 30 – May 2** — Health check correctly flagged resolver silent failure on trades 13/14/16 (Kalshi markets stuck open past close date due to a DNS error against `api.kalshi.com`). Two fix attempts (URL prefix correction, then forcing the resolver to always hit the live API with the correct URL) landed Apr 30; root cause fixed May 2 by making `kalshi_resolution_base_url` configurable (defaults to `demo-api.kalshi.co`) to work around the Railway DNS issue. Kalshi market resolution failures isolated so one bad market doesn't block others (May 1). **Correction (Aug 12, 2026):** the "Railway DNS issue" diagnosis was wrong — `api.kalshi.com` simply isn't a real Kalshi hostname and never resolves, from anywhere. The May 2 fix masked the crash by defaulting to the demo API but broke resolution correctness in the process. Real production host is `https://external-api.kalshi.com`. See `lloyd-backlog.md` → Recent History → Aug 12 entry for the actual fix.
 
 **May 2026:**
 - **May 15-16** — Health check hardening: `_build_api_data` moved to executor thread, healthcheck timeout bumped to 60s; event loop now yields every 10 pages during market fetch so the health server doesn't block; Polymarket Gamma API 422 pagination edge case handled gracefully.
@@ -106,7 +111,8 @@ Entries through March 21, 2026 are from the original handoff series and are hist
 - **Jul 23** — See "Recent History" at the top of `lloyd-backlog.md` for the full account: Gemini billing fix, GPT-5.6 Luna swap, RSS feeds populated (9 feeds), `NoDecode` parsing bug fix, monitoring doc reconstructed and then corrected against source. First confirmed critical cost-spike autotriage escalation under the new system (2.34× 7-day median) — plausibly explained by the same-day changes (real Gemini billing, real RSS token cost, restored Tier 2 escalations) but not fully confirmed against `/api/data` cost-by-day figures as of this writing.
 
 **August 2026:**
-- **Aug 8** — Documentation consolidation: merged the fragmented backlog files (`-0317`, `-0723`) into a single `lloyd-backlog.md`; reconstructed this handoff file to replace the missing `stage5`/`5.2`/`5_3`/`5_4` series; fixed dead references in `README.md` and `lloyd-prd.md`. No code changes this session.
+- **Aug 8 (session 1)** — Documentation consolidation: merged the fragmented backlog files (`-0317`, `-0723`) into a single `lloyd-backlog.md`; reconstructed this handoff file to replace the missing `stage5`/`5.2`/`5_3`/`5_4` series; fixed dead references in `README.md` and `lloyd-prd.md`. No code changes this session.
+- **Aug 8 (session 2)** — Ran the official go-live check for the first time since the July 23 fixes: **NO-GO**, weakest criteria calibration_error (0.2166 vs 0.05 threshold) and sample_size (79 vs 100). Investigating the calibration trend (pulled directly from `/api/data`'s `model_scores`, which already contains daily historical snapshots) showed overall Brier/calibration numbers frozen since ~Jul 16 and every `model_scores` row labeled `gpt-4o` only — no Gemini/Luna/Claude rows ever appeared, despite the July 23 fix. Traced via `railway ssh` + direct `predictions` table query: Gemini and Luna were both genuinely healthy and active, but **`claude-sonnet-4-20250514` had zero predictions since June 15** — 53 days — while `/api/data` was actively reporting `tier2_used: 1` on markets that same day. `railway logs | grep prediction_failed | grep claude` (not `/data/lloyd.log`, which turned out to be dead config — see I9) showed the real cause: Anthropic retired that dated model snapshot, every call 404'd, `except Exception` swallowed it and returned `None`, and a separate bug in `ensemble.py` set `tier2_used = True` unconditionally regardless of the result — so the failure was invisible everywhere it would normally surface. Confirmed `claude-sonnet-5` as a valid, cheaper, better-benchmarked replacement via `client.models.list()` against the live key (introductory pricing $2/$10 per 1M through 2026-08-31, then $3/$15). Fixed directly in code (not a Railway dashboard var this time, learning from the July 23 GPT-5 experience): `lloyd/config.py` `claude_model` default → `claude-sonnet-5`, cost tracking → `0.002`/`0.010` per 1k; `lloyd/prediction/ensemble.py` `tier2_used = tier2_result is not None`. Committed and pushed. Also found and logged, not yet fixed: dead `LLOYD_LOG_PATH`/`log_path` config (I9), `lloyd.db` grown to 6.9GB plus an unexplained 832MB April 7 backup (I10). Full account: `lloyd-backlog.md` → Recent History → Aug 8 entry, and P11/P12.
 
 ---
 

@@ -43,17 +43,18 @@ def load_kalshi_private_key(settings: Settings) -> Any | None:
 
 
 def kalshi_market_request_targets(settings: Settings, ticker: str) -> list[tuple[str, str]]:
-    """Return (request_url, signed_path) pairs to try, most reliable first."""
+    """Return (request_url, signed_path) pairs to try, most authoritative first.
+
+    Resolution must reflect the real world, so the production/resolution host
+    is tried before the demo trading host. `fetch_kalshi_market_data` returns
+    on the first HTTP 200 it gets — if the demo host were checked first and
+    happened to have a market under the same ticker, its (fake, possibly
+    permanently-open) data would win and the function would never even reach
+    production. Demo is kept only as a last-resort fallback.
+    """
     seen_urls: set[str] = set()
     targets: list[tuple[str, str]] = []
     sign_path = f"/trade-api/v2/markets/{ticker}"
-
-    trade_base = settings.kalshi_base_url.rstrip("/")
-    if trade_base:
-        url = f"{trade_base}/markets/{ticker}"
-        if url not in seen_urls:
-            targets.append((url, sign_path))
-            seen_urls.add(url)
 
     resolution_host = settings.kalshi_resolution_base_url.rstrip("/")
     if resolution_host:
@@ -62,10 +63,24 @@ def kalshi_market_request_targets(settings: Settings, ticker: str) -> list[tuple
             targets.append((url, sign_path))
             seen_urls.add(url)
 
-    prod_url = f"https://api.kalshi.com/trade-api/v2/markets/{ticker}"
+    # Hardcoded safety net in case the resolution host is misconfigured.
+    # Real production base URL is external-api.kalshi.com — NOT api.kalshi.com,
+    # which is not a real Kalshi hostname and never resolves. That wrong
+    # hostname was previously misdiagnosed as a Railway-specific DNS outage
+    # (see lloyd-backlog.md, fixed 2026-08-12).
+    prod_url = f"https://external-api.kalshi.com/trade-api/v2/markets/{ticker}"
     if prod_url not in seen_urls:
         targets.append((prod_url, sign_path))
         seen_urls.add(prod_url)
+
+    # Last resort only — the demo/paper-trading host, which may not reflect
+    # the real-world outcome at all.
+    trade_base = settings.kalshi_base_url.rstrip("/")
+    if trade_base:
+        url = f"{trade_base}/markets/{ticker}"
+        if url not in seen_urls:
+            targets.append((url, sign_path))
+            seen_urls.add(url)
 
     return targets
 
